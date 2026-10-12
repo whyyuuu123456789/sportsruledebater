@@ -2,12 +2,14 @@
 
 Built on the Lungo Council's rules. One advocate defends the call the officials made, and every party involved,
 however many there are, gets its own advocate. Every round, each advocate argues for one ruling, citing the
-rulebook and the facts, then votes on every possible ruling: APPROVE, REJECT or VETO.
+rulebook and the facts, then votes on every ruling someone argued for (and the call): APPROVE, REJECT or VETO.
+As in Lungo, where agents vote only on proposals, a ruling nobody argues for can't be adopted.
 
 The code, not the model, enforces the council's rules:
   * A side's stake decides what its advocate MAY concede. Each round it can accept a little more, never below
     its floor. An approval it can't give yet is blocked and counted as REJECT.
-  * The rules and the facts decide what it DOES concede: the model judges each ruling on the merits.
+  * The rules and the facts decide what it DOES concede: the model votes on the merits, without being told
+    which rulings its side can accept.
   * A veto must cite a listed rule and an established fact (F#), or it's struck and counted as REJECT.
   * Citations of rules or facts that aren't in the case are struck from the record.
 
@@ -146,8 +148,9 @@ class Council:
                 f"RULES (the only rules anyone may cite; cite them by ID):\n{rules}\n\n"
                 f"POSSIBLE RULINGS (refer to them by ID):\n{rulings}\n\n"
                 "Council rules: use only the facts and rules above. Never invent facts, rules, replays, quotes or "
-                "statistics; a citation of a rule or fact that isn't listed is struck from the record. Argue hard for "
-                "your side, but be honest about what the rules say. Disagree with arguments, not people.")
+                "statistics; a citation of a rule or fact that isn't listed is struck from the record. The council can "
+                "only adopt a ruling that some advocate argues for. Argue hard for your side, but be honest about what "
+                "the rules say. Disagree with arguments, not people.")
 
     def _ask(self, a: Advocate, user: str, max_tokens: int) -> str:
         self.calls += 1
@@ -175,8 +178,9 @@ class Council:
         else:
             instruction = "Answer the strongest objection to your ruling with the rules and facts, or make your best new point."
             if newly:
-                instruction += (f" Your side can now also accept {', '.join(newly)}: if the rules and facts are "
-                                f"against {prev}, you may switch.")
+                instruction += (f" Your side can now also accept {', '.join(newly)}. The council only adopts a "
+                                f"ruling someone argues for, so if the rules and facts are against {prev}, switch to "
+                                "the ruling they support.")
         if rnd == self.rounds - 1:
             instruction += " This is the last round."
         lines += [instruction, "Reply in exactly this format:",
@@ -194,29 +198,29 @@ class Council:
         why = refusal(a, said) if said in c.rulings else "no valid RULING line"
         return Argument(prev, text, struck, note=f"{why}; still argues for {prev}")
 
-    def vote(self, a: Advocate, rnd: int, arguments: dict[str, Argument]) -> dict[str, Vote]:
+    def vote(self, a: Advocate, rnd: int, arguments: dict[str, Argument], table: list[str]) -> dict[str, Vote]:
+        """A merits vote on the rulings on the table. The model isn't told which rulings its side can accept: telling
+        it made it approve whatever its side could live with. check() applies the stakes afterwards."""
         c = self.case
         own = arguments[a.name].ruling
-        others = [r for r in c.rulings if r != own]
-        lines = [f"Round {rnd + 1}. This round's arguments:"]
-        lines += [f"- {n} (for {arg.ruling}): {arg.text}" for n, arg in arguments.items()]
-        lines.append("Vote on each ruling below. Judge it only by the rules and the established facts. Your side's "
-                     "interests are already built in: you may only approve rulings your side can accept.")
-        for r in others:
-            tag = "your side could accept this" if can_accept(a, r, rnd) else \
-                "your side can't accept this: REJECT or VETO only"
-            lines.append(f"- {r}: {c.rulings[r]} [{tag}]")
-        lines += ["Write exactly one line per ruling and nothing else, each in one of these forms:",
-                  "<ruling ID>: APPROVE - <one sentence: why the rules and facts support it>",
-                  "<ruling ID>: REJECT - <one sentence: why you're not persuaded>",
-                  "<ruling ID>: VETO <rule ID> <fact ID> - <one sentence>",
-                  "VETO only when an established fact (F#) and a rule together make the ruling impossible. If it "
-                  "turns on a disputed point (D#) or a judgment call, use REJECT."]
-        found = parse_votes(self._ask(a, "\n".join(lines), 60 + 70 * len(others)), others)
+        others = [r for r in table if r != own]
         votes = {own: Vote("APPROVE", "the ruling it argued for")}
-        for r in others:
-            votes[r] = self.check(a, r, rnd, *found.get(r, ("", "")))
-        return {r: votes[r] for r in c.rulings}
+        if others:
+            lines = [f"Round {rnd + 1}. This round's arguments:"]
+            lines += [f"- {n} (for {arg.ruling}): {arg.text}" for n, arg in arguments.items()]
+            lines.append("Now vote on each ruling below as a neutral rules official would: judge it only by the rules "
+                         "and the established facts, not by what is good for your side.")
+            lines += [f"- {r}: {c.rulings[r]}" for r in others]
+            lines += ["Write exactly one line per ruling and nothing else, each in one of these forms:",
+                      "<ruling ID>: APPROVE - <one sentence: why the rules and facts support it>",
+                      "<ruling ID>: REJECT - <one sentence: why you're not persuaded>",
+                      "<ruling ID>: VETO <rule ID> <fact ID> - <one sentence>",
+                      "VETO only when an established fact (F#) and a rule together make the ruling impossible. If it "
+                      "turns on a disputed point (D#) or a judgment call, use REJECT."]
+            found = parse_votes(self._ask(a, "\n".join(lines), 60 + 70 * len(others)), others)
+            for r in others:
+                votes[r] = self.check(a, r, rnd, *found.get(r, ("", "")))
+        return {r: votes[r] for r in table}
 
     def check(self, a: Advocate, ruling: str, rnd: int, kind: str, rest: str) -> Vote:
         """Enforces the council's rules on one vote."""
@@ -239,8 +243,9 @@ class Council:
     # ---- deciding, from the public record ----
     def decide(self, rnd: int, votes: dict[str, dict[str, Vote]]) -> dict | None:
         c, advs = self.case, self.advocates
-        approvers = {r: [a.name for a in advs if votes[a.name][r].kind == "APPROVE"] for r in c.rulings}
-        everyone = [r for r in c.rulings if len(approvers[r]) == len(advs)]
+        table = list(votes[self.officials.name])
+        approvers = {r: [a.name for a in advs if votes[a.name][r].kind == "APPROVE"] for r in table}
+        everyone = [r for r in table if len(approvers[r]) == len(advs)]
         if everyone:
             choice = c.call if c.call in everyone else max(
                 everyone, key=lambda r: (min(a.likes[r] - bar(a, rnd) for a in advs), sum(a.likes[r] for a in advs)))
@@ -296,9 +301,11 @@ class Council:
                 self.position[a.name] = arg.ruling
                 self.out(f"    {a.name}, for {arg.ruling}: {arg.text}" + (f" [{arg.note}]" if arg.note else "")
                          + (f" [struck: {', '.join(arg.struck)}, not in this case]" if arg.struck else ""))
-            votes = {a.name: self.vote(a, rnd, arguments) for a in self.advocates}
+            argued = {arg.ruling for arg in arguments.values()}
+            table = [r for r in c.rulings if r == c.call or r in argued]
+            votes = {a.name: self.vote(a, rnd, arguments, table) for a in self.advocates}
             self.history.append({"arguments": arguments, "votes": votes})
-            for r in c.rulings:
+            for r in table:
                 yes = [n for n, vs in votes.items() if vs[r].kind == "APPROVE"]
                 label = r + (" (the call)" if r == c.call else "")
                 self.out(f"    Votes on {label}: " + (f"approved by {', '.join(yes)}" if yes else "nobody approves"))
@@ -321,7 +328,7 @@ class Council:
             self.out(f"  DECISION {when}: ESCALATE to {c.escalate_to}. {r['reason']}.")
             last = self.history[-1]["votes"]
             self.out("  Options for the human to weigh (final round's votes):")
-            for ruling in sorted(c.rulings, key=lambda x: -sum(vs[x].kind == "APPROVE" for vs in last.values())):
+            for ruling in sorted(last[self.officials.name], key=lambda x: -sum(vs[x].kind == "APPROVE" for vs in last.values())):
                 yes = [n for n, vs in last.items() if vs[ruling].kind == "APPROVE"]
                 no = [f"{n} ({vs[ruling].kind}" + (f" {vs[ruling].rule} + {vs[ruling].fact}" if vs[ruling].kind == "VETO"
                                                    else "") + ")" for n, vs in last.items() if vs[ruling].kind != "APPROVE"]

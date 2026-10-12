@@ -22,6 +22,16 @@ def council(name, replies, rounds=3, **changes):
     return Council(name, replace(CASES[name], **changes), scripted(replies), rounds, out=lambda _: None)
 
 
+POINT_TWO = {
+    "Game officials": ("ARGUMENT: NBA-TIME.1 and F2: he caught and shot.\nRULING: no_basket",
+                       "basket_counts: VETO NBA-TIME.2 F3 - The clock hit 0.0 before the release."),
+    "Metro Monarchs": ("ARGUMENT: F3 settles it.\nRULING: no_basket",
+                       "basket_counts: REJECT - The shot came too late."),
+    "Lakeside Lynx": ("ARGUMENT: D1, it was one motion.\nRULING: basket_counts",
+                      "no_basket: APPROVE - NBA-TIME.1 is clear on F2."),
+}
+
+
 class CaseTests(unittest.TestCase):
     def test_every_case_is_well_formed(self):
         for name, c in CASES.items():
@@ -46,15 +56,7 @@ class CaseTests(unittest.TestCase):
 
 class ProtocolTests(unittest.TestCase):
     def test_consensus_waits_until_the_losing_side_may_concede(self):
-        replies = {
-            "Game officials": ("ARGUMENT: NBA-TIME.1 and F2: he caught and shot.\nRULING: no_basket",
-                               "basket_counts: VETO NBA-TIME.2 F3 - The clock hit 0.0 before the release."),
-            "Metro Monarchs": ("ARGUMENT: F3 settles it.\nRULING: no_basket",
-                               "basket_counts: REJECT - The shot came too late."),
-            "Lakeside Lynx": ("ARGUMENT: D1, it was one motion.\nRULING: basket_counts",
-                              "no_basket: APPROVE - NBA-TIME.1 is clear on F2."),
-        }
-        c = council("point_two", replies, rounds=6)
+        c = council("point_two", POINT_TWO, rounds=6)
         r = c.run()
         self.assertEqual((r["status"], r["choice"], r["rounds"]), ("CONSENSUS", "no_basket", 3))
         first = c.history[0]["votes"]["Lakeside Lynx"]["no_basket"]
@@ -123,6 +125,30 @@ class ProtocolTests(unittest.TestCase):
         self.assertIn("no longer backs the call", r["reason"])
         ortiz = c.history[-1]["votes"]["Lucia Ortiz"]["no_penalty"]
         self.assertIn("will never concede no_penalty", ortiz.note)
+
+    def test_a_compromise_nobody_argues_for_cannot_be_adopted(self):
+        approve_all = "two_strokes: APPROVE - Fine.\none_stroke: APPROVE - A fair middle ground.\nno_penalty: APPROVE - Fine."
+        replies = {name: (f"ARGUMENT: F3.\nRULING: {ruling}", approve_all) for name, ruling in (
+            ("Rules Committee", "two_strokes"), ("Dana Hale", "no_penalty"),
+            ("Lucia Ortiz", "two_strokes"), ("Ebba Lindqvist", "two_strokes"))}
+        c = council("moved_ball", replies, rounds=6)
+        r = c.run()
+        self.assertEqual(r["status"], "CALL_STANDS")
+        self.assertTrue(all("one_stroke" not in rnd["votes"]["Dana Hale"] for rnd in c.history))
+
+    def test_the_merits_vote_is_not_told_the_stakes(self):
+        prompts = []
+        base = scripted(POINT_TWO)
+
+        def ask(system, user, max_tokens, seed):
+            if "ARGUMENT:" not in user:
+                prompts.append(user)
+            return base(system, user, max_tokens, seed)
+
+        Council("point_two", CASES["point_two"], ask, 6, out=lambda _: None).run()
+        self.assertTrue(prompts)
+        for p in prompts:
+            self.assertNotRegex(p, r"(?i)side (could|can|can't|won't) accept")
 
     def test_vote_lines_tolerate_formatting_and_missing_votes(self):
         reply = "**pen_yellow**: approve - Attempt to play the ball.\n1. fk_red (free kick): VETO LOTG-1.2 F1 - On the line."
