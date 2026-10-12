@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sports Rules Council</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="masthead">
+  <div class="wrap">
+    <h1>Sports Rules Council</h1>
+    <p>Advocates for each side argue a contested call. A neutral panel watches the clip and decides.</p>
+  </div>
+</header>
+
+<main class="wrap">
+  <form id="ask" class="card" novalidate>
+    <h2><span class="num">1</span>The clip</h2>
+    <label class="field">Link to the clip
+      <input id="url" type="url" autocomplete="off" spellcheck="false"
+             placeholder="https://… a link to a video file, or a YouTube link if yt-dlp is installed">
+    </label>
+    <div class="row">
+      <span class="muted">or</span>
+      <label class="button secondary" for="file">Upload a clip</label>
+      <input id="file" type="file" accept="video/*" class="visually-hidden">
+      <span id="file-name" class="muted"></span>
+    </div>
+    <p id="link-note" class="note" hidden></p>
+    <div id="player" class="player" hidden></div>
+
+    <div class="times">
+      <label class="field small">Incident starts
+        <input id="start" placeholder="1:12" autocomplete="off">
+      </label>
+      <button type="button" id="set-start" class="button secondary" disabled>Use player time</button>
+      <label class="field small">Ends
+        <input id="end" placeholder="1:20" autocomplete="off">
+      </label>
+      <button type="button" id="set-end" class="button secondary" disabled>Use player time</button>
+    </div>
+    <p class="hint">Mark the few seconds around the incident: that's the stretch the frame reader and the panel look at.
+      Leave both blank to use the whole clip.</p>
+
+    <h2><span class="num">2</span>What happened</h2>
+    <label class="field">Describe the call
+      <textarea id="context" rows="5"
+                placeholder="Competition, the teams or drivers (and their colours), the minute and score, what the officials ruled and why, and what each side says."></textarea>
+    </label>
+
+    <details class="options">
+      <summary>Options</summary>
+      <div class="grid">
+        <label class="field small">Rounds of discussion
+          <input id="rounds" type="number" min="1" max="8" value="4">
+        </label>
+        <label class="field small">Panel
+          <select id="panel">
+            <option value="3" selected>3 neutral members</option>
+            <option value="2">2 neutral members</option>
+            <option value="1">1 neutral member</option>
+            <option value="0">No panel: the advocates decide</option>
+          </select>
+        </label>
+        <label class="field small">Frames to read
+          <input id="frames" type="number" min="4" max="20" value="12">
+        </label>
+      </div>
+      <label class="check"><input id="check" type="checkbox" checked> Let me check the case before the discussion starts</label>
+    </details>
+
+    <div class="actions">
+      <button id="go" class="button primary" type="submit">Get a ruling</button>
+      <p id="form-error" class="error" role="alert"></p>
+    </div>
+  </form>
+
+  <section id="progress" class="card" hidden>
+    <h2>Working on it</h2>
+    <ol id="steps" class="steps"></ol>
+    <p id="progress-error" class="error" role="alert"></p>
+    <details id="log-box" open>
+      <summary>What's happening</summary>
+      <pre id="log" class="log"></pre>
+    </details>
+  </section>
+
+  <form id="check-case" class="card" hidden novalidate></form>
+
+  <section id="ruling" class="card" hidden></section>
+</main>
+
+<footer class="wrap footer">
+  Runs on this computer: Ollama for the models, ffmpeg for the frames. AI rulings are opinions, not official decisions.
+</footer>
+<script src="/static/app.js"></script>
+</body>
+</html>

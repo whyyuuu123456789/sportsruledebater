@@ -116,7 +116,8 @@ def split_clauses(lines: list[str]) -> list[list[str]]:
 
 
 def tokens(text: str) -> list[str]:
-    return [t for t in re.findall(r"[a-z0-9]+", text.lower()) if t not in STOPWORDS and len(t) > 1]
+    """Words cut to their first five letters, a crude stem: collided and collision both become 'colli'."""
+    return [t[:5] for t in re.findall(r"[a-z0-9]+", text.lower()) if t not in STOPWORDS and len(t) > 1]
 
 
 def search(rules: dict[str, Rule], query: str, k: int = 10) -> list[Rule]:

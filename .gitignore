@@ -11,3 +11,6 @@ __pycache__/
 cases/*/frames/
 rules/*.pdf
 rules/.cache/
+
+# Clips uploaded through the website
+uploads/

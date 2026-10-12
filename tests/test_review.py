@@ -45,6 +45,18 @@ class LibraryTests(unittest.TestCase):
     def test_search_finds_the_clause_that_matches(self):
         hits = search(load_rulebook("soccer"), "did the defender deliberately play the ball or was it a deflection", 3)
         self.assertIn(hits[0].id, {"LOTG-11.DP", "LOTG-11.2"})
+        f1 = [r.id for r in search(load_rulebook("formula1"), "they collided at turn 1; who was to blame", 3)]
+        self.assertLessEqual({"FIA-L4.2d", "FIA-B1.9.3"}, set(f1))
+        lapped = search(load_rulebook("formula1"), "lapped cars were allowed to overtake behind the safety car", 2)
+        self.assertEqual({r.id for r in lapped}, {"FIA-B5.13.4", "FIA-B5.13.5"})
+
+    def test_every_rulebook_id_works_as_a_citation(self):
+        for name in rulebooks():
+            for rid in load_rulebook(name):
+                with self.subTest(rid):
+                    prefix, _, rest = rid.partition("-")
+                    self.assertNotRegex(prefix, r"^[FD]\d+$")  # would read as a fact ID like F1
+                    self.assertRegex(rest, r"^[A-Za-z0-9.]*[A-Za-z0-9]$")  # what the council's citation pattern takes
 
     @unittest.skipUnless(importlib.util.find_spec("pypdf"), "needs pypdf")
     def test_pdf_rulebook_is_split_into_page_clauses_and_markdown_wins(self):
@@ -99,8 +111,7 @@ UNDERSTAND = {"sport": "soccer", "rulebooks": ["soccer"], "title": "Late goal af
               "incident": "Eastport's defender touched a long ball, which reached Northgate's striker, who scored.",
               "officials": "Referee & VAR", "call": "Goal allowed", "call_reason": "The defender played the ball.",
               "parties": [{"name": "Northgate United", "stake": "Leads 2-1 if the goal stands."},
-                          {"name": "Eastport Athletic", "stake": "Stays 1-1 if it is disallowed."}],
-              "high_stakes": "true", "escalate_to": "the league's review panel"}
+                          {"name": "Eastport Athletic", "stake": "Stays 1-1 if it is disallowed."}]}
 
 
 def model(understand=UNDERSTAND, rulings=None):
@@ -120,11 +131,17 @@ def model(understand=UNDERSTAND, rulings=None):
                                "disputed": [{"text": "Whether the touch was a deliberate play."}]})
         if "Rank every ruling" in user:
             best = "goal_stands" if "Northgate" in system else "no_goal"
-            return json.dumps({"ranking": [best], "stakes": "high"})
-        if "ARGUMENT:" in user:  # the council
-            mine = "goal_stands" if "Northgate" in system or "Referee" in system else "no_goal"
-            return f"ARGUMENT: LOTG-11.DP and F2.\nRULING: {mine}"
-        return "goal_stands: REJECT - Judgment call.\nno_goal: REJECT - Judgment call."
+            return json.dumps({"ranking": [best]})
+        if system.startswith("You are Panelist"):  # the neutral panel
+            if "Before hearing the advocates" in user:
+                return "NOTES: A defender stretches for the ball."
+            vote = "no_goal" if system.startswith("You are Panelist C") else "goal_stands"
+            return f"REASON: The touch looked deliberate to me.\nPOSITION: {vote}"
+        mine = "goal_stands" if system.startswith(("You are the advocate for Northgate", "You are the advocate for "
+                                                    "Referee")) else "no_goal"
+        if "MESSAGE:" in user:  # a turn in the council's discussion
+            return f"MESSAGE: LOTG-11.DP and F2.\nPOSITION: {mine}"
+        return f"REASON: A judgment call.\nPOSITION: {mine}"  # the closing vote
     return chat
 
 
@@ -138,11 +155,9 @@ class IntakeTests(unittest.TestCase):
         self.assertEqual(case.facts["F1"], "The striker was in an offside position. [your context]")
         self.assertEqual(case.facts["F2"], "The defender stretched for the ball. [video 0:41.5]")
         self.assertEqual(case.disputed, {"D1": "Whether the touch was a deliberate play."})
-        self.assertTrue(case.high_stakes)
         northgate, eastport = case.parties
         self.assertEqual(northgate.likes, {"goal_stands": 1.0, "no_goal": 0.0})
         self.assertEqual(eastport.likes, {"no_goal": 1.0, "goal_stands": 0.0})
-        self.assertEqual((northgate.concession, northgate.floor), (0.1, 0.5))  # high stakes
 
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "case.json"
@@ -150,7 +165,8 @@ class IntakeTests(unittest.TestCase):
             again = load_case(path)
         self.assertEqual(again, case)
         result = Council("t", again, model(), rounds=2, out=lambda _: None).run()
-        self.assertEqual(result["status"], "CALL_STANDS")
+        self.assertEqual((result["status"], result["choice"], result["tally"]), ("VOTE", "goal_stands",
+                                                                                  {"goal_stands": 2, "no_goal": 1}))
 
     def test_doubtful_answers_are_flagged_for_the_user(self):
         rulings = {"rulings": [{"id": "no_goal", "text": "Offside"}, {"id": "retake", "text": "Retake"}]}
@@ -177,7 +193,9 @@ class ReviewTests(unittest.TestCase):
                                           "--rounds", "2"]), 0)
             folder = Path(tmp) / "cases" / "t"
             self.assertEqual(load_case(folder / "case.json").call, "goal_stands")
-            self.assertIn("CALL STANDS", (folder / "transcript.md").read_text())
+            transcript = (folder / "transcript.md").read_text()
+            self.assertIn("Closing statements to the panel", transcript)
+            self.assertIn("DECISION after 2 rounds, by the panel (2 of 3)", transcript)
 
 
 if __name__ == "__main__":

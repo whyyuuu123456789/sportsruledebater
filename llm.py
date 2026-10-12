@@ -66,12 +66,13 @@ def connect(model: str = MODEL) -> Chat:
     def chat(system: str, user: str, max_tokens: int, seed: int,
              images: tuple[bytes, ...] = (), json_mode: bool = False) -> str:
         pics = [base64.b64encode(i).decode() for i in images]
+        num_ctx = 16384 if pics else 8192  # frames take a few hundred tokens each
         if litellm:
             content: str | list = user
             if pics:
                 content = [{"type": "text", "text": user}] + [
                     {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{p}"}} for p in pics]
-            extra = {"num_ctx": 8192} if local else {}
+            extra = {"num_ctx": num_ctx} if local else {}
             if json_mode:
                 extra["response_format"] = {"type": "json_object"}
             resp = litellm.completion(model=model, max_tokens=max_tokens, temperature=0.3, seed=seed, **extra,
@@ -81,7 +82,7 @@ def connect(model: str = MODEL) -> Chat:
         message = {"role": "user", "content": user, **({"images": pics} if pics else {})}
         body = {"model": model.split("/", 1)[-1], "stream": False,
                 "messages": [{"role": "system", "content": system}, message],
-                "options": {"temperature": 0.3, "seed": seed, "num_predict": max_tokens, "num_ctx": 8192},
+                "options": {"temperature": 0.3, "seed": seed, "num_predict": max_tokens, "num_ctx": num_ctx},
                 **({"format": "json"} if json_mode else {})}
         return _ollama("/api/chat", body)["message"]["content"]
 

@@ -5,8 +5,7 @@
   3. rulings     the call, plus the other rulings those rules allow
   4. facts       established facts (said by the user, or plainly visible) and disputed points (everything that
                  turns on judgement). Each fact keeps its source, so people can check it.
-  5. positions   each party's advocate ranks the rulings for its side and says how much is at stake; the code
-                 turns that into the likes, concession and floor the council uses
+  5. positions   each party's advocate ranks the rulings for its side: where it starts the discussion
 """
 
 from __future__ import annotations
@@ -23,7 +22,6 @@ from llm import Chat
 SYSTEM = ("You turn a contested sports officiating decision into a case file for a rules review. Use only what the "
           "user says and what the video observations show. Never invent names, scores, times or events; if something "
           "isn't known, leave it empty. Answer in JSON.")
-STAKES = {"low": (0.25, 0.0), "medium": (0.15, 0.3), "high": (0.1, 0.5)}  # concession, floor
 SHORTLIST = 15
 EXAMPLE = ('EXAMPLE from a different case, to show the shape only: {"sport": "basketball", "title": "Catch-and-shoot '
            'with 0.2 seconds left", "officials": "Game officials", "call": "No basket", "parties": [{"name": "Lakeside '
@@ -85,12 +83,9 @@ class Intake:
             '"call": what the officials ruled, in a few words\n'
             '"call_reason": the reason the officials gave, or "" if unknown\n'
             '"parties": every team or player the call affects (at least two), as a list of {"name": ..., '
-            '"wants": the outcome they want, in a few words, "stake": what they gain or lose}\n'
-            '"high_stakes": true if the call decides a game, title, medal or qualification\n'
-            '"escalate_to": who would hear an appeal, for example "the league\'s referee review panel"\n\n'
+            '"wants": the outcome they want, in a few words, "stake": what they gain or lose}\n\n'
             + EXAMPLE, 800)
-        info = {k: text(d.get(k)) for k in ("sport", "title", "incident", "officials", "call", "call_reason",
-                                            "escalate_to")}
+        info = {k: text(d.get(k)) for k in ("sport", "title", "incident", "officials", "call", "call_reason")}
         if not info["call"]:
             raise IntakeError("I couldn't tell what the officials ruled. Say it in --context.")
         parties, seen = [], set()
@@ -108,8 +103,8 @@ class Intake:
         if not picked:
             raise IntakeError(f"No rulebook in rules/ covers {info['sport'] or 'this sport'}. Add one (markdown or "
                               "PDF) and run it again.")
-        return {**info, "parties": parties, "rulebooks": picked, "high_stakes": str(d.get("high_stakes")).lower() == "true",
-                "officials": info["officials"] or "Officials", "title": info["title"] or info["call"]}
+        return {**info, "parties": parties, "rulebooks": picked, "officials": info["officials"] or "Officials",
+                "title": info["title"] or info["call"]}
 
     # 2
     def find_rules(self, info: dict) -> dict[str, Rule]:
@@ -194,17 +189,15 @@ class Intake:
                 f"INCIDENT: {info['incident']}\n{wants}{p['stake']}\n\nPOSSIBLE RULINGS:\n"
                 + "\n".join(f"- {k}: {v}" for k, v in rulings.items())
                 + f"\n\nRank every ruling from best to worst for {p['name']}: first the ruling that gives {p['name']} "
-                "what it wants, last the one that hurts it most. Then say how much is at stake for it. "
-                'Return JSON {"ranking": [ruling ids, best first], "stakes": "low", "medium" or "high"}', 150,
+                "what it wants, last the one that hurts it most. "
+                'Return JSON {"ranking": [ruling ids, best first]}', 150,
                 system=f"You are the advocate for {p['name']} in a sports rules review. Answer in JSON.")
             ranking = list(dict.fromkeys(slug(r) for r in d.get("ranking") or [] if slug(r) in rulings))
             ranking += [r for r in rulings if r not in ranking]
             likes = {r: round(1 - i / (len(ranking) - 1), 2) for i, r in enumerate(ranking)}
-            stakes = str(d.get("stakes", "")).lower()
-            concession, floor = STAKES.get(stakes, STAKES["medium"])
             side = f"You represent {p['name']}. {wants}{p['stake']}".strip()
-            advocates.append(Advocate(p["name"], side, likes, concession, floor))
-            self.log(f"  {p['name']}: wants {ranking[0]}, {stakes if stakes in STAKES else 'medium'} stakes")
+            advocates.append(Advocate(p["name"], side, likes))
+            self.log(f"  {p['name']}: wants {ranking[0]}")
         favorites = {max(a.likes, key=a.likes.get) for a in advocates}
         if len(favorites) == 1:
             self.warnings.append(f"Every party's first choice is {favorites.pop()}. In a real dispute the parties want "
@@ -221,6 +214,4 @@ class Intake:
         parties = self.take_positions(info, rulings)
         return Case(sport=info["sport"], level=level, title=info["title"], incident=info["incident"],
                     officials=info["officials"], call=call, call_reason=info["call_reason"], rulings=rulings,
-                    facts=facts, disputed=disputed, rulebook=info["rulebooks"], rules=tuple(rules), parties=parties,
-                    expect="", high_stakes=info["high_stakes"],
-                    escalate_to=info["escalate_to"] or "the competition's review panel")
+                    facts=facts, disputed=disputed, rulebook=info["rulebooks"], rules=tuple(rules), parties=parties)

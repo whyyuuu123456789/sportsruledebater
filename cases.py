@@ -1,26 +1,23 @@
-"""Contested calls for the sports rules council, from easy to impossible. Add your own by copying one.
+"""Contested calls for the sports rules council to discuss. Add your own by copying one.
 
 Every case has:
   call        the ruling the officials made; one advocate defends it
   rulings     every ruling the council may reach, including the call
-  facts       established facts everyone accepts (F1, F2, ...); a veto must cite one
-  disputed    points the sides disagree on (D1, D2, ...); arguable, but they can't ground a veto
+  facts       established facts everyone accepts (F1, F2, ...)
+  disputed    points the sides disagree on (D1, D2, ...)
   rulebook    which rulebook in rules/ to read (or a list of them), and rules: the clauses (by ID) the
               advocates may cite
   parties     one advocate per party involved, as many as there are
-  high_stakes the call decides a result (a game, a title, a medal): an unresolved rule objection
-              to it goes to a human instead of letting the call stand
+  frames      stills from the clip, if the case came from one: the neutral panel looks at them
 
-For each advocate:
-  likes       how good each ruling is for its side, from 0 (worst) to 1 (best)
-  concession  how much it lowers its standards each round; small means it fights longer
-  floor       the lowest "likes" it will ever concede to; rulings below it are never approved
+For each advocate, likes says how good each ruling is for its side, from 0 (worst) to 1 (best). It sets the
+advocate's starting position and tells it what its side wants; where it ends up depends on the discussion.
 """
 
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass, fields
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
 from library import Rule, load_rulebook  # noqa: F401  (re-exported: cases and rulebooks go together)
@@ -30,15 +27,13 @@ from library import Rule, load_rulebook  # noqa: F401  (re-exported: cases and r
 class Advocate:
     name: str
     side: str                   # who it speaks for and what's at stake, in the advocate's voice
-    likes: dict[str, float]
-    concession: float = 0.15
-    floor: float = 0.5
+    likes: dict[str, float]     # how good each ruling is for its side: its starting position and preferences
 
 
 @dataclass
 class Case:
     sport: str
-    level: str                  # easy, in-between, long or impossible
+    level: str                  # a few words on what kind of dispute it is
     title: str
     incident: str
     officials: str              # who made the call; also the name of the advocate who defends it
@@ -50,21 +45,18 @@ class Case:
     rulebook: str | list[str]
     rules: tuple[str, ...]
     parties: list[Advocate]
-    expect: str                 # what a rules expert would expect: CONSENSUS, CALL_STANDS or ESCALATE
-    expect_ruling: str = ""     # for CONSENSUS, the ruling expected
-    high_stakes: bool = False
-    escalate_to: str = "the league's referee review panel"
-    officials_concession: float = 0.25  # how soon the officials' advocate will consider other rulings
     note: str = ""
     officials_side: str = ""   # overrides the officials' advocate's default brief
+    video: str = ""            # the clip the case came from, if any
+    frames: list[str] = field(default_factory=list)  # stills from the clip for the panel (paths from the repo root)
 
     def officials_advocate(self) -> Advocate:
         side = self.officials_side or (
-            f"You represent {self.officials}, who made the call. Defend it with the rules and the facts. Officials "
-            "care most about getting it right: if the rules and the established facts clearly show the call was "
-            "wrong, concede.")
+            f"You represent {self.officials}, who made the call. Explain and defend it with the rules and the facts, "
+            "but officials care most about getting it right: if the discussion convinces you the call was wrong, "
+            "say so.")
         likes = {r: 1.0 if r == self.call else 0.5 for r in self.rulings}
-        return Advocate(self.officials, side, likes, concession=self.officials_concession, floor=0.5)
+        return Advocate(self.officials, side, likes)
 
     def advocates(self) -> list[Advocate]:
         return [self.officials_advocate(), *self.parties]
@@ -81,17 +73,31 @@ def save_case(case: Case, path: Path, **extra) -> None:
 
 
 def load_case(path: Path) -> Case:
-    data = json.loads(path.read_text())
+    return case_from_dict(json.loads(path.read_text()))
+
+
+def case_from_dict(data: dict) -> Case:
+    """A case from its JSON form. Unknown keys are ignored; a missing or inconsistent field raises ValueError."""
     data = {k: v for k, v in data.items() if k in {f.name for f in fields(Case)}}
-    data["parties"] = [Advocate(**p) for p in data["parties"]]
-    data["rules"] = tuple(data["rules"])
-    return Case(**data)
+    keep = {f.name for f in fields(Advocate)}  # older case files also have concession and floor
+    try:
+        data["parties"] = [Advocate(**{k: v for k, v in p.items() if k in keep}) for p in data["parties"]]
+        data["rules"] = tuple(data["rules"])
+        case = Case(**data)
+    except (KeyError, TypeError, AttributeError) as exc:
+        raise ValueError(f"the case is missing something: {exc}") from exc
+    if case.call not in case.rulings:
+        raise ValueError(f"the call {case.call!r} isn't one of the rulings")
+    for a in case.parties:
+        if set(a.likes) != set(case.rulings):
+            raise ValueError(f"{a.name}'s preferences don't cover exactly the rulings")
+    return case
 
 
 CASES: dict[str, Case] = {
     "point_two": Case(
         sport="Basketball (NBA rules)",
-        level="easy",
+        level="clear-cut",
         title="A catch-and-shoot buzzer-beater with 0.2 seconds left",
         incident="Metro Monarchs lead the Lakeside Lynx 100-99 with 0.2 seconds left. The Lynx inbound to guard "
                  "Dre Carter, who catches the pass, turns and hits a jump shot as the horn sounds.",
@@ -116,18 +122,14 @@ CASES: dict[str, Case] = {
         rules=("NBA-TIME.1", "NBA-TIME.2", "NBA-REPLAY"),
         parties=[
             Advocate("Lakeside Lynx", "You represent the Lakeside Lynx. If Carter's shot counts, the Lynx win 101-100.",
-                     {"basket_counts": 1.0, "no_basket": 0.3}, concession=0.35, floor=0.3),
+                     {"basket_counts": 1.0, "no_basket": 0.3}),
             Advocate("Metro Monarchs", "You represent the Metro Monarchs. If the basket stays waved off, the Monarchs "
-                     "win 100-99.", {"no_basket": 1.0, "basket_counts": 0.0}, concession=0.2, floor=0.5),
+                     "win 100-99.", {"no_basket": 1.0, "basket_counts": 0.0}),
         ],
-        expect="CONSENSUS",
-        expect_ruling="no_basket",
-        high_stakes=True,
-        escalate_to="the league office",
     ),
     "dogso_card": Case(
         sport="Soccer (IFAB Laws of the Game)",
-        level="in-between",
+        level="two questions",
         title="Penalty and red card for a sliding trip on the penalty-area line",
         incident="55th minute, 0-0. Riverside FC striker Leo Varga runs onto a through ball and is clean through on "
                  "goal. Harbor City defender Sam Okafor, chasing from the side, slides in, misses the ball, and his "
@@ -158,17 +160,14 @@ CASES: dict[str, Case] = {
         parties=[
             Advocate("Riverside FC", "You represent Riverside FC, whose striker was tripped. A penalty plus a red card "
                      "would leave Harbor City with ten men for 35 minutes.",
-                     {"pen_red": 1.0, "pen_yellow": 0.7, "fk_red": 0.4, "no_foul": 0.0}, concession=0.15, floor=0.5),
+                     {"pen_red": 1.0, "pen_yellow": 0.7, "fk_red": 0.4, "no_foul": 0.0}),
             Advocate("Harbor City", "You represent Harbor City, whose defender Sam Okafor was sent off.",
-                     {"no_foul": 1.0, "fk_red": 0.6, "pen_yellow": 0.6, "pen_red": 0.0}, concession=0.2, floor=0.5),
+                     {"no_foul": 1.0, "fk_red": 0.6, "pen_yellow": 0.6, "pen_red": 0.0}),
         ],
-        expect="CONSENSUS",
-        expect_ruling="pen_yellow",
-        escalate_to="the competition's disciplinary panel",
     ),
     "deflection_offside": Case(
         sport="Soccer (IFAB Laws of the Game)",
-        level="impossible",
+        level="judgment call",
         title="Late goal after a defender's touch: deliberate play or deflection?",
         incident="88th minute, 1-1. Northgate United's goalkeeper launches a long kick upfield. Eastport Athletic "
                  "centre-back Tom Reyes stretches for the dropping ball and touches it; it loops forward to Northgate "
@@ -202,13 +201,11 @@ CASES: dict[str, Case] = {
             Advocate("Eastport Athletic", "You represent Eastport Athletic. If the goal is disallowed, the match stays "
                      "1-1.", {"no_goal": 1.0, "goal": 0.0}),
         ],
-        expect="CALL_STANDS",
-        note="A judgment call on a disputed point (D1): neither side will concede, so the on-field call stands unless "
-             "the officials' own advocate gives it up.",
+        note="It turns on a judgment call (D1): did the defender deliberately play the ball?",
     ),
     "moved_ball": Case(
         sport="Golf (Rules of Golf)",
-        level="impossible",
+        level="four parties",
         title="A ball that moved at address decides a tournament: three players, one ruling",
         incident="Final round, 72nd hole. Leader Dana Hale grounds her putter behind her ball on the fringe, and a "
                  "second later the ball rolls a few centimetres. She says the wind moved it, plays it from where it "
@@ -248,20 +245,16 @@ CASES: dict[str, Case] = {
                "GOLF-14.7a", "GOLF-20.2c"),
         parties=[
             Advocate("Dana Hale", "You represent Dana Hale. With no penalty she wins the tournament outright.",
-                     {"no_penalty": 1.0, "one_stroke": 0.5, "two_strokes": 0.0}, concession=0.15, floor=0.4),
+                     {"no_penalty": 1.0, "one_stroke": 0.5, "two_strokes": 0.0}),
             Advocate("Lucia Ortiz", "You represent Lucia Ortiz, who finished 9 under. With the two-stroke penalty "
                      "she's in a two-player playoff for the title; with one stroke it's a three-way playoff; with no "
                      "penalty she finishes tied second.",
-                     {"two_strokes": 1.0, "one_stroke": 0.5, "no_penalty": 0.0}, concession=0.15, floor=0.4),
+                     {"two_strokes": 1.0, "one_stroke": 0.5, "no_penalty": 0.0}),
             Advocate("Ebba Lindqvist", "You represent Ebba Lindqvist, who finished 9 under. With the two-stroke "
                      "penalty she's in a two-player playoff for the title; with one stroke it's a three-way playoff; "
                      "with no penalty she finishes tied second.",
-                     {"two_strokes": 1.0, "one_stroke": 0.5, "no_penalty": 0.0}, concession=0.1, floor=0.4),
+                     {"two_strokes": 1.0, "one_stroke": 0.5, "no_penalty": 0.0}),
         ],
-        expect="ESCALATE",
-        high_stakes=True,
-        escalate_to="the R&A and USGA rules officials, for a formal interpretation",
-        note="Four advocates. 'one_stroke' looks like a fair compromise, but it isn't a ruling the Rules allow on "
-             "these facts: she either caused the ball to move and played from a wrong place, or she didn't.",
+        note="Four advocates: the Rules Committee and three players whose places depend on the ruling.",
     ),
 }

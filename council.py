@@ -1,28 +1,28 @@
-"""Sports rules council: advocates for the officials and for every party argue over a contested call.
+"""Sports rules council: advocates for the officials and for every party discuss a contested call, and a neutral
+panel decides it.
 
-Built on the Lungo Council's rules. One advocate defends the call the officials made, and every party involved,
-however many there are, gets its own advocate. Every round, each advocate argues for one ruling, citing the
-rulebook and the facts, then votes on every ruling someone argued for (and the call): APPROVE, REJECT or VETO.
-As in Lungo, where agents vote only on proposals, a ruling nobody argues for can't be adopted.
+One advocate defends the call the officials made, and every party involved, however many there are, gets its own
+advocate. They hold an actual discussion: they speak in turn, each one seeing everything said so far, answer each
+other by name, concede points, and change their minds when they're persuaded. After every turn the speaker says
+which ruling it backs now. When the discussion ends, each advocate gives the panel a closing statement.
 
-The code, not the model, enforces the council's rules:
-  * A side's stake decides what its advocate MAY concede. Each round it can accept a little more, never below
-    its floor. An approval it can't give yet is blocked and counted as REJECT.
-  * The rules and the facts decide what it DOES concede: the model votes on the merits, without being told
-    which rulings its side can accept.
-  * A veto must cite a listed rule and an established fact (F#), or it's struck and counted as REJECT.
-  * Citations of rules or facts that aren't in the case are struck from the record.
+The neutral panel decides. Its members have no side, and they're played by a different model from the advocates,
+one that can see images. When the case comes from a video, each member watches the clip before the discussion and
+writes down what it sees, so its view of the evidence comes from the clip and not from either side. After the
+discussion, each member looks at the frames again and votes on its own:
 
-No one is in charge. The council ends in one of three ways, checked against the public record:
-  CONSENSUS     every advocate approves the same ruling: the call is upheld or overturned
-  CALL_STANDS   no consensus, but the officials' advocate still backs the call, so it stands and the dissent
-                is recorded (the "clear and obvious error" standard)
-  ESCALATE      the officials gave up the call and nothing replaces it, or a grounded rule objection to a call
-                that decides a result is unresolved: a human decides
+  CONSENSUS   the panel is unanimous
+  VOTE        the panel's majority wins; the dissent is recorded
+  TIE         the panel is split evenly: the advocates' final positions break the tie, and failing that the call
+              stands
 
-    python3 council.py                  # every case (needs Ollama running, or LLM_MODEL set)
+There's no answer key: the panel decides, and the transcript shows why. With --panel 0 the advocates decide by
+themselves instead: a consensus during the discussion, or else a closing vote among them.
+
+    python3 council.py                  # every demo case (needs Ollama running, or LLM_MODEL set)
     python3 council.py dogso_card       # one case
-    python3 council.py all --rounds 4   # fewer rounds
+    python3 council.py all --rounds 3   # a shorter discussion
+    python3 council.py all --panel 0    # no panel: the advocates decide among themselves
     python3 council.py --case-file cases/<name>/case.json   # a saved case, such as one review.py built from a video
 """
 
@@ -32,73 +32,65 @@ import argparse
 import re
 import sys
 import time
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
 from cases import CASES, Advocate, Case, load_case
+from evidence import stamp
 from library import load_rulebook
-from llm import MODEL, connect
+from llm import MODEL, VISION_MODEL, Chat, connect
 
-EPS = 1e-9
-MAX_ROUNDS = 6
+MAX_ROUNDS = 4
+HISTORY = 16       # how many of the latest turns a speaker is shown
+PANEL_FRAMES = 6   # how many stills from the clip each panel member looks at
+PANEL = [("Panelist A", "You pay most attention to what the clip and the established facts actually show."),
+         ("Panelist B", "You pay most attention to the exact wording of the rules."),
+         ("Panelist C", "You pay most attention to fairness and the purpose behind the rules.")]
 HERE = Path(__file__).resolve().parent
 FACT_ID = re.compile(r"\b[FD]\d+\b")
-VOTE_LINE = re.compile(r"^[^A-Za-z0-9]*(?:\d+[.)]\s*)?([A-Za-z][A-Za-z0-9_]*)\b.{0,40}?\b(APPROVE|REJECT|VETO)\b(.*)$",
-                       re.IGNORECASE)
+POSITION = re.compile(r"^\W*POSITION\W*?[:\-]\s*\W*([A-Za-z0-9_]+)", re.IGNORECASE | re.MULTILINE)
 
 Ask = Callable[[str, str, int, int], str]  # (system, user, max_tokens, seed) -> reply
 
 
-def bar(a: Advocate, rnd: int) -> float:
-    return max(a.floor, 1 - a.concession * rnd)
-
-
-def can_accept(a: Advocate, ruling: str, rnd: int) -> bool:
-    return a.likes[ruling] >= bar(a, rnd) - EPS
-
-
-def refusal(a: Advocate, ruling: str) -> str:
-    return f"{a.name} will never concede {ruling}" if a.likes[ruling] < a.floor - EPS else \
-        f"{a.name} can't concede {ruling} yet"
+def favorite(a: Advocate) -> str:
+    return max(a.likes, key=a.likes.get)
 
 
 @dataclass
-class Vote:
-    kind: str           # APPROVE, REJECT or VETO
-    reason: str = ""
-    rule: str = ""      # a veto's grounds: a listed rule and an established fact
-    fact: str = ""
-    note: str = ""      # what the code changed, and why
-
-    def __str__(self) -> str:
-        grounds = f" ({self.rule} + {self.fact})" if self.kind == "VETO" else ""
-        return f"{self.kind}{grounds}" + (f": {self.reason}" if self.reason else "") + \
-            (f" [{self.note}]" if self.note else "")
-
-
-@dataclass
-class Argument:
-    ruling: str
-    text: str
+class Turn:
+    round: int
+    speaker: str
+    message: str
+    before: str       # the ruling the speaker backed going into the turn
+    position: str     # and the one it backs after it
     struck: list[str]
     note: str = ""
 
 
-def parse_votes(reply: str, rulings: list[str]) -> dict[str, tuple[str, str]]:
-    """One line per ruling, e.g. 'pen_red: VETO LOTG-12.3 F2 - ...'. Returns {ruling: (kind, rest of line)}."""
-    found: dict[str, tuple[str, str]] = {}
-    for line in reply.splitlines():
-        m = VOTE_LINE.match(line.strip())
-        if m and m.group(1).lower() in rulings and m.group(1).lower() not in found:
-            found[m.group(1).lower()] = (m.group(2).upper(), m.group(3).strip(" -:–—*"))
-    return found
+@dataclass
+class Panelist:
+    name: str
+    lens: str         # what it pays most attention to
+    notes: str = ""   # what it saw in the clip before the discussion
+
+
+def parse(reply: str) -> tuple[str, str]:
+    """Splits a reply into what was said and the ruling on its 'POSITION:' line ('' if there isn't one)."""
+    named = POSITION.findall(reply)
+    body = POSITION.sub("", reply)
+    text = " ".join(re.sub(r"^\W*(MESSAGE|REASON|STATEMENT|NOTES)\s*[:\-]\s*", "", body.strip(),
+                           flags=re.IGNORECASE).split())
+    return text.strip('"* '), (named[-1].lower() if named else "")
 
 
 class Council:
     def __init__(self, name: str, case: Case, ask: Ask, rounds: int = MAX_ROUNDS,
-                 out: Callable[[str], None] = lambda text: print(text, flush=True)):
-        self.name, self.case, self.ask, self.rounds, self._print = name, case, ask, rounds, out
+                 out: Callable[[str], None] = lambda text: print(text, flush=True),
+                 look: Chat | None = None, panel: int = len(PANEL)):
+        self.name, self.case, self.ask, self.rounds, self._print, self.look = name, case, ask, rounds, out, look
         self.advocates = case.advocates()
         self.officials = self.advocates[0]
         book = {}
@@ -110,173 +102,193 @@ class Council:
         self.rules = {r: book[r] for r in case.rules}
         prefixes = sorted({r.split("-")[0] for r in book}, key=len, reverse=True)
         self.rule_id = re.compile(r"\b(?:" + "|".join(map(re.escape, prefixes)) + r")-[A-Za-z0-9.]*[A-Za-z0-9]")
+        self.panel = [Panelist(n, lens) for n, lens in PANEL[:panel]] if look else []
+        self.frames = self.load_frames() if self.panel else []
         self.lines: list[str] = []
         self.calls = 0
-        self.position: dict[str, str] = {}  # the ruling each advocate argued for last
-        self.history: list[dict] = []       # the public record: each round's arguments and votes
-        self.last_kinds: dict | None = None
+        self.position = {a.name: favorite(a) for a in self.advocates}  # where each advocate stands now
+        self.turns: list[Turn] = []                                     # the discussion, in order
+        self.statements: dict[str, str] = {}                            # closing statements to the panel
 
     def out(self, text: str = "") -> None:
         self._print(text)
         self.lines.append(text)
 
-    # ---- citations ----
     def ids(self, text: str) -> tuple[list[str], list[str]]:
         """Rule and fact IDs cited in text, split into (listed in this case, struck)."""
         found = dict.fromkeys(self.rule_id.findall(text) + FACT_ID.findall(text))
         listed = [i for i in found if i in self.rules or i in self.case.facts or i in self.case.disputed]
         return listed, [i for i in found if i not in listed]
 
-    def strip_ids(self, text: str) -> str:
-        """'LOTG-12.3 F2 - He went for the ball' -> 'He went for the ball'."""
-        if re.match(r"[\s(\[]*(?:" + self.rule_id.pattern + "|" + FACT_ID.pattern + ")", text):
-            text = re.sub(r"^.*?[-–—:]\s+", "", text, count=1)
-        return text
+    def load_frames(self) -> list[tuple[float, bytes]]:
+        """Up to PANEL_FRAMES of the case's stills, spread evenly, as (seconds into the clip, JPEG bytes)."""
+        paths = [p if p.is_absolute() else HERE / p for p in map(Path, self.case.frames)]
+        paths = [p for p in paths if p.exists()]
+        if len(paths) > PANEL_FRAMES:
+            paths = [paths[round(i * (len(paths) - 1) / (PANEL_FRAMES - 1))] for i in range(PANEL_FRAMES)]
+        found = [re.search(r"(\d+(?:\.\d+)?)$", p.stem) for p in paths]
+        return [(float(m.group(1)) if m else 0.0, p.read_bytes()) for m, p in zip(found, paths)]
 
-    # ---- talking to the model ----
-    def system(self, a: Advocate) -> str:
+    # ---- what everyone is told ----
+    def brief(self) -> str:
         c = self.case
         facts = "\n".join(f"{k}: {v}" for k, v in c.facts.items())
         disputed = "\n".join(f"{k}: {v}" for k, v in c.disputed.items()) or "none"
         rules = "\n".join(f"[{r.id}] {r.title}: {' '.join(r.text.split())}" for r in self.rules.values())
         rulings = "\n".join(f"- {k}: {v}" + (" (the call)" if k == c.call else "") for k, v in c.rulings.items())
-        return (f"You are the advocate for {a.name} on a sports rules council reviewing a contested call. {a.side}\n\n"
-                f"SPORT: {c.sport}\nINCIDENT: {c.incident}\n"
+        return (f"SPORT: {c.sport}\nINCIDENT: {c.incident}\n"
                 f"THE CALL: {c.officials} ruled: {c.rulings[c.call]}. {c.call_reason}\n\n"
                 f"ESTABLISHED FACTS (everyone accepts these; cite them by ID):\n{facts}\n\n"
-                f"DISPUTED POINTS (you may argue these, but they can't prove a ruling breaks a rule):\n{disputed}\n\n"
+                f"DISPUTED POINTS (the sides see these differently):\n{disputed}\n\n"
                 f"RULES (the only rules anyone may cite; cite them by ID):\n{rules}\n\n"
-                f"POSSIBLE RULINGS (refer to them by ID):\n{rulings}\n\n"
-                "Council rules: use only the facts and rules above. Never invent facts, rules, replays, quotes or "
-                "statistics; a citation of a rule or fact that isn't listed is struck from the record. The council can "
-                "only adopt a ruling that some advocate argues for. Argue hard for your side, but be honest about what "
-                "the rules say. Disagree with arguments, not people.")
+                f"POSSIBLE RULINGS (refer to them by ID):\n{rulings}")
+
+    def system(self, a: Advocate) -> str:
+        others = ", ".join(b.name for b in self.advocates if b is not a)
+        decides = (("then a neutral panel" + (", who also watch the clip," if self.frames else "") + " decides it, so "
+                    "argue to persuade them") if self.panel else
+                   "then decide it together; if they don't all agree by the end, it's decided by a vote")
+        return (f"You are the advocate for {a.name} on a sports rules council discussing a contested call with "
+                f"{others}. {a.side}\n\n{self.brief()}\n\n"
+                f"How the council works: the advocates discuss the call in turn, {decides}. Use only the facts and "
+                "rules above, citing them by ID; never invent facts, rules, replays, quotes or statistics (a citation of "
+                "anything not listed is struck from the record). Speak up for your side, but this is a real discussion: "
+                "listen to the others, and change your position only if an argument actually convinces you, not just "
+                "to be agreeable. Disagree with arguments, not people.")
+
+    def panel_system(self, p: Panelist) -> str:
+        return (f"You are {p.name}, a neutral member of the panel deciding a contested sports call. You don't represent "
+                "the officials or any team or player, and nothing rides on the result for you. "
+                f"{p.lens} Advocates for the officials and for each party discuss the call; then each panel member "
+                "votes on the ruling, independently. Decide on the evidence and the rules, not on who argued hardest. "
+                "Use only the facts and rules below" + (", and when you look at the clip, describe only what it actually "
+                "shows" if self.frames else "") + ".\n\n" + self.brief())
 
     def _ask(self, a: Advocate, user: str, max_tokens: int) -> str:
         self.calls += 1
         return self.ask(self.system(a), user, max_tokens, 7 + self.calls)
 
-    def argue(self, a: Advocate, rnd: int) -> Argument:
-        c, last = self.case, (self.history[-1] if self.history else None)
-        allowed = [r for r in c.rulings if can_accept(a, r, rnd)]
-        refused = [r for r in c.rulings if r not in allowed]
-        newly = [r for r in allowed if rnd > 0 and not can_accept(a, r, rnd - 1)]
-        prev = self.position.get(a.name) or max(c.rulings, key=lambda r: a.likes[r])
-        lines = [f"Round {rnd + 1} of at most {self.rounds}.",
-                 f"Your side's first choice: {max(c.rulings, key=lambda r: a.likes[r])}. Rulings your side could "
-                 f"accept this round: {', '.join(allowed)}." + (f" It won't accept: {', '.join(refused)}." if refused else "")]
-        if last:
-            lines.append("Last round's arguments:")
-            lines += [f"- {n} (for {arg.ruling}): {arg.text}" for n, arg in last["arguments"].items() if n != a.name]
-            lines.append(f"Your last argument (make a new point, don't repeat it): {last['arguments'][a.name].text}")
-            objections = [f"- {n}: {vs[prev]}" for n, vs in last["votes"].items()
-                          if n != a.name and vs[prev].kind != "APPROVE"]
-            if objections:
-                lines += [f"Objections to {prev} last round:", *objections]
-        if rnd == 0:
-            instruction = f"Make your opening argument for {prev}."
+    def _look(self, p: Panelist, user: str, max_tokens: int) -> str:
+        self.calls += 1
+        return self.look(self.panel_system(p), user, max_tokens, 7 + self.calls,
+                         images=tuple(jpeg for _, jpeg in self.frames))
+
+    def discussion(self, viewer: Advocate | None) -> str:
+        """The latest turns as the viewer sees them: its own are labelled 'You', so it doesn't answer itself."""
+        return "\n".join(f"- You (backing {t.position}): {t.message}" if viewer and t.speaker == viewer.name else
+                         f"- {t.speaker} (backs {t.position}): {t.message}" for t in self.turns[-HISTORY:])
+
+    # ---- the advocates ----
+    def speak(self, a: Advocate, rnd: int) -> Turn:
+        """One turn: the advocate answers the discussion so far and says which ruling it backs now."""
+        c = self.case
+        wishes = sorted(c.rulings, key=lambda r: -a.likes[r])
+        lines = [f"Round {rnd + 1} of {self.rounds}.",
+                 f"What your side would like, best first: {', '.join(wishes)}. You currently back: "
+                 f"{self.position[a.name]}."]
+        lines += ["THE DISCUSSION SO FAR:", self.discussion(a)] if self.turns else ["Nobody has spoken yet."]
+        if not any(t.speaker == a.name for t in self.turns):
+            instruction = (f"Open by explaining the call ({c.call}) and why it's right." if a is self.officials else
+                           f"Open by making the case for {favorite(a)}, the ruling your side wants.")
         else:
-            instruction = "Answer the strongest objection to your ruling with the rules and facts, or make your best new point."
-            if newly:
-                instruction += (f" Your side can now also accept {', '.join(newly)}. The council only adopts a "
-                                f"ruling someone argues for, so if the rules and facts are against {prev}, switch to "
-                                "the ruling they support.")
+            instruction = ("Respond to what the others have said since you last spoke: answer them by name, accept the "
+                           "points you think are right and push back on the ones you think are wrong. Make a new point; "
+                           "don't repeat what you've already said. If an argument has changed your mind, change your "
+                           "position and say which argument did it.")
         if rnd == self.rounds - 1:
-            instruction += " This is the last round."
+            instruction += " This is the last round of discussion."
         lines += [instruction, "Reply in exactly this format:",
-                  "ARGUMENT: <two to four sentences in the first person, citing rule and fact IDs>",
-                  f"RULING: <one ID from: {', '.join(allowed)}>"]
-        reply = self._ask(a, "\n".join(lines), 220)
+                  "MESSAGE: <two to four sentences, speaking to the others>",
+                  f"POSITION: <the ruling you back now: one of {', '.join(c.rulings)}>"]
+        reply = self._ask(a, "\n".join(lines), 230)
+        message, said = parse(reply)
+        before, note = self.position[a.name], ""
+        if said not in c.rulings:
+            said, note = before, "no valid POSITION line, so its position is unchanged"
+        self.position[a.name] = said
+        turn = Turn(rnd, a.name, message, before, said, self.ids(reply)[1], note)
+        self.turns.append(turn)
+        return turn
 
-        m = re.search(r"RULING\W*([A-Za-z0-9_]+)", reply, re.IGNORECASE)
-        said = m.group(1).lower() if m else ""
-        body = "\n".join(l for l in reply.splitlines() if not re.match(r"\W*(RULING|CITES)\b", l, re.IGNORECASE))
-        text = " ".join(re.sub(r"^\W*ARGUMENT\s*[:\-]\s*", "", body.strip(), flags=re.IGNORECASE).split()).strip('"*')
-        struck = self.ids(reply)[1]
-        if said in allowed:
-            return Argument(said, text, struck)
-        why = refusal(a, said) if said in c.rulings else "no valid RULING line"
-        return Argument(prev, text, struck, note=f"{why}; still argues for {prev}")
+    def closing_statements(self) -> None:
+        for a in self.advocates:
+            reply = self._ask(a, "The discussion is over. Here is how it went:\n" + self.discussion(a)
+                              + f"\n\nA neutral panel{', who have also watched the clip,' if self.frames else ''} will now "
+                              "decide. Give them your closing statement: one or two sentences on why they should rule "
+                              f"{self.position[a.name]}. Reply in exactly this format:\nSTATEMENT: <your statement>", 150)
+            self.statements[a.name] = parse(reply)[0]
 
-    def vote(self, a: Advocate, rnd: int, arguments: dict[str, Argument], table: list[str]) -> dict[str, Vote]:
-        """A merits vote on the rulings on the table. The model isn't told which rulings its side can accept: telling
-        it made it approve whatever its side could live with. check() applies the stakes afterwards."""
+    def closing_vote(self) -> dict[str, tuple[str, str]]:
+        """Without a panel: each advocate votes on its own, having heard the discussion but not the other votes."""
+        c, votes = self.case, {}
+        for a in self.advocates:
+            reply = self._ask(a, "The discussion is over. Here is how it went:\n" + self.discussion(a)
+                              + f"\n\nYou currently back {self.position[a.name]}. Cast your final vote for the ruling the "
+                              "council should make, having heard everyone. Reply in exactly this format:\n"
+                              "REASON: <one sentence>\n"
+                              f"POSITION: <one of {', '.join(c.rulings)}>", 120)
+            reason, said = parse(reply)
+            votes[a.name] = (said if said in c.rulings else self.position[a.name], reason)
+        return votes
+
+    def decide(self, votes: dict[str, tuple[str, str]]) -> dict:
+        """Without a panel: the advocates' closing vote. A tie goes the officials' way, or else the call stands."""
         c = self.case
-        own = arguments[a.name].ruling
-        others = [r for r in table if r != own]
-        votes = {own: Vote("APPROVE", "the ruling it argued for")}
-        if others:
-            lines = [f"Round {rnd + 1}. This round's arguments:"]
-            lines += [f"- {n} (for {arg.ruling}): {arg.text}" for n, arg in arguments.items()]
-            lines.append("Now vote on each ruling below as a neutral rules official would: judge it only by the rules "
-                         "and the established facts, not by what is good for your side.")
-            lines += [f"- {r}: {c.rulings[r]}" for r in others]
-            lines += ["Write exactly one line per ruling and nothing else, each in one of these forms:",
-                      "<ruling ID>: APPROVE - <one sentence: why the rules and facts support it>",
-                      "<ruling ID>: REJECT - <one sentence: why you're not persuaded>",
-                      "<ruling ID>: VETO <rule ID> <fact ID> - <one sentence>",
-                      "VETO only when an established fact (F#) and a rule together make the ruling impossible. If it "
-                      "turns on a disputed point (D#) or a judgment call, use REJECT."]
-            found = parse_votes(self._ask(a, "\n".join(lines), 60 + 70 * len(others)), others)
-            for r in others:
-                votes[r] = self.check(a, r, rnd, *found.get(r, ("", "")))
-        return {r: votes[r] for r in table}
+        tally = Counter(v for v, _ in votes.values())
+        leaders = [r for r in c.rulings if tally[r] == max(tally.values())]
+        status, choice, how = "VOTE", leaders[0], ""
+        if len(leaders) > 1:
+            status, officials_vote = "TIE", votes[self.officials.name][0]
+            choice, how = (officials_vote, "the officials' vote breaks it") if officials_vote in leaders else \
+                (c.call, "the call stands")
+        dissent = [f"{n} ({v}): {reason}" for n, (v, reason) in votes.items() if v != choice]
+        return {"status": status, "choice": choice, "tally": dict(tally), "votes": votes, "dissent": dissent,
+                "how": how, "decided_by": "advocates"}
 
-    def check(self, a: Advocate, ruling: str, rnd: int, kind: str, rest: str) -> Vote:
-        """Enforces the council's rules on one vote."""
-        if not kind:
-            return Vote("REJECT", note="no clear vote; counted as REJECT")
-        if kind == "VETO":
-            cited = self.ids(rest)[0]
-            rules = [i for i in cited if i in self.rules]
-            facts = [i for i in cited if i in self.case.facts]
-            if rules and facts:
-                return Vote("VETO", self.strip_ids(rest), rules[0], facts[0])
-            why = "a veto must cite a listed rule and an established fact (F#)"
-            if any(i in self.case.disputed for i in cited):
-                why += "; D# points are disputed"
-            return Vote("REJECT", rest, note=f"veto struck: {why}")
-        if kind == "APPROVE" and not can_accept(a, ruling, rnd):
-            return Vote("REJECT", rest, note=f"approval blocked: {refusal(a, ruling)}")
-        return Vote(kind, rest)
+    # ---- the panel ----
+    def first_look(self, p: Panelist) -> str:
+        """Before the discussion, the panel member watches the clip and notes what it sees, without deciding."""
+        times = ", ".join(stamp(t) for t, _ in self.frames)
+        p.notes = parse(self._look(
+            p, f"Before hearing the advocates, watch the clip. These {len(self.frames)} frames are from it, at {times}, "
+               "in order. Write down what you see that matters for the ruling, and say so if the frames don't show "
+               "something important. Don't decide yet. Reply in two to five sentences, starting with 'NOTES:'.", 220))[0]
+        return p.notes
 
-    # ---- deciding, from the public record ----
-    def decide(self, rnd: int, votes: dict[str, dict[str, Vote]]) -> dict | None:
-        c, advs = self.case, self.advocates
-        table = list(votes[self.officials.name])
-        approvers = {r: [a.name for a in advs if votes[a.name][r].kind == "APPROVE"] for r in table}
-        everyone = [r for r in table if len(approvers[r]) == len(advs)]
-        if everyone:
-            choice = c.call if c.call in everyone else max(
-                everyone, key=lambda r: (min(a.likes[r] - bar(a, rnd) for a in advs), sum(a.likes[r] for a in advs)))
-            return {"status": "CONSENSUS", "choice": choice, "rounds": rnd + 1,
-                    "reason": "the call is upheld" if choice == c.call else "the call is overturned"}
-        kinds = {(n, r): v.kind for n, vs in votes.items() for r, v in vs.items()}
-        settled = all(bar(a, rnd) <= a.floor + EPS for a in advs) and kinds == self.last_kinds
-        self.last_kinds = kinds
-        if settled or rnd == self.rounds - 1:
-            return self.stalemate(rnd, votes)
-        return None
-
-    def stalemate(self, rnd: int, votes: dict[str, dict[str, Vote]]) -> dict:
+    def panel_vote(self, p: Panelist) -> tuple[str, str]:
+        """After the discussion: the panel member looks at the frames again and votes. ('', reason) is no valid vote."""
         c = self.case
-        on_call = {n: vs[c.call] for n, vs in votes.items()}
-        dissent = [f"{n}: {v}" for n, v in on_call.items() if v.kind != "APPROVE"]
-        grounded = [n for n, v in on_call.items() if v.kind == "VETO"]
-        result = {"rounds": rnd + 1, "dissent": dissent}
-        if on_call[self.officials.name].kind == "APPROVE" and not (grounded and c.high_stakes):
-            why = "No ruling has everyone's approval, but the officials still back the call, and " + (
-                "nobody showed it breaks a rule" if not grounded else
-                "the grounded objections to it are on record, but it doesn't decide a result")
-            return {**result, "status": "CALL_STANDS", "choice": c.call, "reason": why}
-        if on_call[self.officials.name].kind != "APPROVE":
-            why = "The officials' advocate no longer backs the call, and no other ruling has everyone's approval"
+        closing = "\n".join(f"- {n} (backs {self.position[n]}): {s}" for n, s in self.statements.items())
+        clip = (f"YOUR NOTES FROM WATCHING THE CLIP BEFORE THE DISCUSSION: {p.notes}\nThe frames are attached again; "
+                "look at them before you decide.\n\n" if self.frames else "")
+        reason, said = parse(self._look(
+            p, f"THE ADVOCATES' DISCUSSION:\n{self.discussion(None)}\n\nTHEIR CLOSING STATEMENTS:\n{closing}\n\n{clip}"
+               "Now vote for the ruling the evidence and the rules support, whichever side that favours. Reply in "
+               "exactly this format:\n"
+               "REASON: <one or two sentences: what in the clip, the facts or the arguments decided it for you>\n"
+               f"POSITION: <one of {', '.join(c.rulings)}>", 200))
+        return (said if said in c.rulings else "", reason)
+
+    def panel_decide(self, votes: dict[str, tuple[str, str]]) -> dict:
+        """The panel's majority wins. A tie goes to whichever tied ruling more advocates ended up backing; failing
+        that, the call stands."""
+        c = self.case
+        tally = Counter(v for v, _ in votes.values() if v)
+        leaders = [r for r in c.rulings if tally and tally[r] == max(tally.values())]
+        if len(leaders) == 1:
+            status = "CONSENSUS" if tally[leaders[0]] == len(votes) else "VOTE"
+            choice, how = leaders[0], ""
         else:
-            why = (f"{' and '.join(grounded)} raised a rule objection grounded in an established fact that the "
-                   "officials haven't conceded, and the call decides a result")
-        return {**result, "status": "ESCALATE", "reason": why}
+            status, leaders = "TIE", leaders or list(c.rulings)
+            backing = Counter(self.position.values())
+            favored = [r for r in leaders if backing[r] == max(backing[x] for x in leaders)]
+            choice, how = (favored[0], "the advocates' final positions break the tie") if len(favored) == 1 else \
+                (c.call, "the call stands")
+        dissent = [f"{n} ({v or 'no valid vote'}): {reason}" for n, (v, reason) in votes.items() if v != choice]
+        return {"status": status, "choice": choice, "tally": dict(tally), "votes": votes, "dissent": dissent,
+                "how": how, "decided_by": "panel"}
 
-    # ---- the transcript ----
+    # ---- the whole review ----
     def run(self) -> dict:
         c = self.case
         self.out(f"=== {self.name} ({c.level}): {c.sport} ===")
@@ -286,98 +298,125 @@ class Council:
         if c.note:
             self.out(c.note)
         for a in self.advocates:
-            fav = max(c.rulings, key=lambda r: a.likes[r])
-            settle = [r for r in c.rulings if r != fav and a.likes[r] >= a.floor - EPS]
-            verb = "defends" if a is self.officials else "wants"
-            self.out(f"  {a.name} {verb} {fav}" + (f"; could settle for {', '.join(settle)}" if settle else "") + ".")
+            self.out(f"  {a.name} starts out backing {self.position[a.name]}"
+                     + (" (the call)." if a is self.officials else "."))
+        if self.panel:
+            self.out(f"  Neutral panel: {', '.join(p.name for p in self.panel)}.")
         self.out()
+        if self.panel and c.frames and not self.frames:
+            self.out("  (The case lists frames from the clip, but they weren't found, so the panel decides without them.)")
+        if self.frames:
+            self.out(f"  The panel watches the clip first ({len(self.frames)} frames, {stamp(self.frames[0][0])} to "
+                     f"{stamp(self.frames[-1][0])})")
+            for p in self.panel:
+                self.out(f"    {p.name}: {self.first_look(p)}")
 
-        result: dict = {}
+        consensus, n = "", len(self.advocates)
         for rnd in range(self.rounds):
             self.out(f"  Round {rnd + 1}")
-            arguments: dict[str, Argument] = {}
-            for a in self.advocates:
-                arg = arguments[a.name] = self.argue(a, rnd)
-                self.position[a.name] = arg.ruling
-                self.out(f"    {a.name}, for {arg.ruling}: {arg.text}" + (f" [{arg.note}]" if arg.note else "")
-                         + (f" [struck: {', '.join(arg.struck)}, not in this case]" if arg.struck else ""))
-            argued = {arg.ruling for arg in arguments.values()}
-            table = [r for r in c.rulings if r == c.call or r in argued]
-            votes = {a.name: self.vote(a, rnd, arguments, table) for a in self.advocates}
-            self.history.append({"arguments": arguments, "votes": votes})
-            for r in table:
-                yes = [n for n, vs in votes.items() if vs[r].kind == "APPROVE"]
-                label = r + (" (the call)" if r == c.call else "")
-                self.out(f"    Votes on {label}: " + (f"approved by {', '.join(yes)}" if yes else "nobody approves"))
-                for n, vs in votes.items():
-                    if vs[r].kind != "APPROVE":
-                        self.out(f"      {n} {vs[r]}")
-            result = self.decide(rnd, votes) or {}
-            if result:
+            changed = False
+            for a in self.advocates[rnd % n:] + self.advocates[:rnd % n]:  # a different advocate opens each round
+                t = self.speak(a, rnd)
+                changed |= t.position != t.before
+                stance = f"{t.before} -> {t.position}" if t.position != t.before else t.position
+                self.out(f"    {a.name} [{stance}]: {t.message}" + (f" [{t.note}]" if t.note else "")
+                         + (f" [struck: {', '.join(t.struck)}, not in this case]" if t.struck else ""))
+                if rnd >= 1 and len(set(self.position.values())) == 1:
+                    consensus = t.position
+                    break
+            if consensus:
+                self.out(f"    (The advocates all back {consensus}, so the discussion ends here.)")
                 break
+            if rnd >= 2 and not changed and rnd < self.rounds - 1:
+                self.out("    (Nobody changed position this round, so the discussion ends here.)")
+                break
+        rounds = rnd + 1
 
-        r = result
-        when = f"after {r['rounds']} round{'s' if r['rounds'] > 1 else ''}"
-        if r["status"] == "CONSENSUS":
-            self.out(f"  DECISION {when}: CONSENSUS, {r['reason']}: {c.rulings[r['choice']].rstrip('.')}.")
-        elif r["status"] == "CALL_STANDS":
-            self.out(f"  DECISION {when}: CALL STANDS: {c.rulings[c.call].rstrip('.')}. {r['reason']}.")
-            for d in r["dissent"]:
-                self.out(f"    Dissent on record: {d}")
+        if self.panel:
+            self.out("  Closing statements to the panel")
+            self.closing_statements()
+            for name, statement in self.statements.items():
+                self.out(f"    {name} ({self.position[name]}): {statement}")
+            self.out("  Panel vote")
+            votes = {p.name: self.panel_vote(p) for p in self.panel}
+            for name, (vote, reason) in votes.items():
+                self.out(f"    {name}: {vote or 'no valid vote'}. {reason}")
+            result = self.panel_decide(votes)
+        elif consensus:
+            result = {"status": "CONSENSUS", "choice": consensus, "tally": {}, "votes": {}, "dissent": [], "how": "",
+                      "decided_by": "advocates"}
         else:
-            self.out(f"  DECISION {when}: ESCALATE to {c.escalate_to}. {r['reason']}.")
-            last = self.history[-1]["votes"]
-            self.out("  Options for the human to weigh (final round's votes):")
-            for ruling in sorted(last[self.officials.name], key=lambda x: -sum(vs[x].kind == "APPROVE" for vs in last.values())):
-                yes = [n for n, vs in last.items() if vs[ruling].kind == "APPROVE"]
-                no = [f"{n} ({vs[ruling].kind}" + (f" {vs[ruling].rule} + {vs[ruling].fact}" if vs[ruling].kind == "VETO"
-                                                   else "") + ")" for n, vs in last.items() if vs[ruling].kind != "APPROVE"]
-                self.out(f"    - {c.rulings[ruling]}: backed by {', '.join(yes) or 'nobody'}; opposed by {', '.join(no)}")
+            self.out("  Closing vote")
+            votes = self.closing_vote()
+            for name, (vote, reason) in votes.items():
+                self.out(f"    {name}: {vote}. {reason}")
+            result = self.decide(votes)
+        result.update(rounds=rounds, positions=dict(self.position), upheld=result["choice"] == c.call,
+                      notes={p.name: p.notes for p in self.panel if p.notes}, statements=dict(self.statements),
+                      frames_seen=[t for t, _ in self.frames])
+
+        r, when = result, f"after {rounds} round{'s' if rounds > 1 else ''}"
+        who, size = ("the panel", len(self.panel)) if r["decided_by"] == "panel" else ("the advocates", n)
+        verdict = f"{c.rulings[r['choice']].rstrip('.')}. The call is {'upheld' if r['upheld'] else 'overturned'}."
+        if r["status"] == "CONSENSUS":
+            self.out(f"  DECISION {when}: CONSENSUS, {who} all back {r['choice']}: {verdict}")
+        elif r["status"] == "VOTE":
+            self.out(f"  DECISION {when}, by {who} ({r['tally'][r['choice']]} of {size}): {verdict}")
+        else:
+            split = ", ".join(f"{k} {v}" for k, v in r["tally"].items()) or "no valid votes"
+            self.out(f"  DECISION {when}: {who} are split ({split}), so {r['how']}: {verdict}")
+        for d in r["dissent"]:
+            self.out(f"    Dissent: {d}")
+        if r["decided_by"] == "panel":
+            self.out("    The advocates' final positions: " + "; ".join(f"{k} {v}" for k, v in self.position.items()))
         return result
 
 
-def debate(name: str, case: Case, ask: Ask, rounds: int, transcript: Path, header: str) -> dict:
-    """Runs the council on one case and saves the transcript."""
+def debate(name: str, case: Case, ask: Ask, rounds: int, transcript: Path, header: str,
+           look: Chat | None = None, panel: int = len(PANEL), out: Callable[[str], None] | None = None) -> dict:
+    """Runs the council on one case and saves the transcript. out gets each transcript line (default: print)."""
     started = time.time()
-    council = Council(name, case, ask, rounds)
+    council = Council(name, case, ask, rounds, look=look, panel=panel, **({"out": out} if out else {}))
     result = council.run()
-    council.out(f"  ({MODEL}, {council.calls} model calls, {time.time() - started:.0f}s)")
+    models = MODEL + (f" for the advocates, {VISION_MODEL} for the panel" if council.panel else "")
+    council.out(f"  ({models}; {council.calls} model calls, {time.time() - started:.0f}s)")
     transcript.parent.mkdir(parents=True, exist_ok=True)
     transcript.write_text(header + "\n\n" + "\n".join(council.lines) + "\n")
     return result
 
 
-DEMO_HEADER = ("> **Simulation.** Every advocate is played by an AI model. The teams and players are fictional, and "
-               "the rule excerpts in rules/ are paraphrased.")
-SAVED_HEADER = ("> Every advocate is played by an AI model. The case was built by AI models from a video and the "
-                "user's description; check its facts in case.json before trusting the outcome.")
+DEMO_HEADER = ("> **Simulation.** Every advocate and panel member is played by an AI model. The teams and players are "
+               "fictional, and the soccer, basketball and golf rule excerpts in rules/ are paraphrased.")
+SAVED_HEADER = ("> Every advocate and panel member is played by an AI model. The case was built by AI models from a "
+                "video and the user's description; check its facts in case.json.")
 
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("case", nargs="?", default="all", choices=[*CASES, "all"])
-    ap.add_argument("--case-file", type=Path, help="debate a saved case instead, such as one review.py built")
-    ap.add_argument("--rounds", type=int, default=MAX_ROUNDS, help=f"most rounds per case (default {MAX_ROUNDS})")
+    ap.add_argument("--case-file", type=Path, help="discuss a saved case instead, such as one review.py built")
+    ap.add_argument("--rounds", type=int, default=MAX_ROUNDS, help=f"most rounds of discussion (default {MAX_ROUNDS})")
+    ap.add_argument("--panel", type=int, default=len(PANEL), choices=range(len(PANEL) + 1),
+                    help=f"neutral panel members who decide (default {len(PANEL)}; 0: the advocates decide)")
     args = ap.parse_args(argv)
     ask = connect(MODEL)
+    look = connect(VISION_MODEL) if args.panel else None
 
     if args.case_file:
         name = args.case_file.parent.name if args.case_file.stem == "case" else args.case_file.stem
         debate(name, load_case(args.case_file), ask, args.rounds, args.case_file.with_name("transcript.md"),
-               SAVED_HEADER)
+               SAVED_HEADER, look, args.panel)
         return 0
 
     rows = []
     for name in (list(CASES) if args.case == "all" else [args.case]):
-        result = debate(name, CASES[name], ask, args.rounds, HERE / "transcripts" / f"{name}.md", DEMO_HEADER)
-        rows.append((name, CASES[name], result))
+        rows.append((name, CASES[name], debate(name, CASES[name], ask, args.rounds,
+                                               HERE / "transcripts" / f"{name}.md", DEMO_HEADER, look, args.panel)))
         print()
-
-    print(f"{'case':<20}{'level':<12}{'result':<28}{'rounds':>6}  rules expert would expect")
+    print(f"{'case':<20}{'kind':<16}{'decision':<28}{'by':<14}{'rounds':>6}  the call")
     for name, case, r in rows:
-        got = r["status"] + (f": {r['choice']}" if r["status"] == "CONSENSUS" else "")
-        want = case.expect + (f": {case.expect_ruling}" if case.expect_ruling else "")
-        print(f"{name:<20}{case.level:<12}{got:<28}{r['rounds']:>6}  {'same' if got == want else want}")
+        print(f"{name:<20}{case.level:<16}{r['status'] + ': ' + r['choice']:<28}{r['decided_by']:<14}{r['rounds']:>6}  "
+              f"{'upheld' if r['upheld'] else 'overturned'}")
     return 0
 
 
