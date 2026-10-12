@@ -96,6 +96,18 @@ the default model has an 8k-token context, and a full rulebook runs to tens of t
 need 3 to 9 clauses. Rule IDs start with a prefix for the rulebook (`LOTG-`, `NBA-`, `GOLF-`), which is how the
 council tells a citation from ordinary text.
 
+## Results with `llama3.1:8b`
+
+| Case | Result | A rules expert would expect |
+|---|---|---|
+| `point_two` | CONSENSUS after 3 rounds: call upheld | same. The Lynx were persuaded in round 2, but their stake let them concede only in round 3. |
+| `dogso_card` | CONSENSUS after 3 rounds: penalty + yellow | same. The Referee's advocate gave up the red card once someone argued for the yellow. |
+| `deflection_offside` | CALL_STANDS after 5 rounds | same |
+| `moved_ball` | CALL_STANDS after 6 rounds | ESCALATE. Hale's best point (the naked-eye rule and F6) came as a REJECT, never a veto citing a rule and a fact, so nothing grounded the escalation. Three advocates approved the one-stroke compromise; Hale's refusal kept it from being adopted. |
+
+Transcripts are in `transcripts/`. Every advocate is the same small model, so read the arguments for their
+structure more than their legal reasoning.
+
 ## What the first run taught
 
 The first version put every ruling to a vote every round and told each advocate which rulings its side could
