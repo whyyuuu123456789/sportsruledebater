@@ -1,3 +1,13 @@
 __pycache__/
 *.pyc
 .env
+
+# Your clips, the frames pulled from them, and official rulebook PDFs (copyrighted: keep them out of the public repo)
+*.mp4
+*.mov
+*.mkv
+*.webm
+*.avi
+cases/*/frames/
+rules/*.pdf
+rules/.cache/

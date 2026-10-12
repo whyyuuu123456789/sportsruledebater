@@ -4,18 +4,25 @@ A council that reviews a contested officiating decision, built on the Lungo Coun
 (`aiagentdisagreethingy`). One advocate defends the call the officials made. Every party the call affects gets
 its own advocate, however many there are: two teams, or three golfers whose finishing places depend on one
 ruling. Nobody is in charge. The advocates argue from a public rulebook and a list of facts everyone accepts,
-vote on every possible ruling, and the outcome follows from the votes.
+vote on the rulings argued for, and the outcome follows from the votes.
+
+It can also build a case itself: give it a video and what you know, and the agents work out the incident, who
+the parties are, which rules apply and where each side stands, then debate it.
 
 ```
 python3 council.py                    # every case (needs Ollama running, or LLM_MODEL set)
 python3 council.py dogso_card         # one case
 python3 council.py all --rounds 4     # fewer rounds
-python3 -m unittest discover -s tests -t .   # protocol tests, with a scripted model (no LLM needed)
+python3 review.py clip.mp4 --at 0:42 --context "..."   # build a case from a video, then debate it
+python3 council.py --case-file cases/<name>/case.json  # debate a saved case again
+python3 -m unittest discover -s tests -t .   # tests, with a scripted model (no LLM needed)
 ```
 
-Standard-library Python 3.12+. The model comes from `LLM_MODEL` (default `ollama_chat/llama3.1:8b`). If
-litellm is installed it is used, so any litellm model works (for example `anthropic/claude-sonnet-5-5`);
-otherwise the council talks to Ollama directly. Transcripts are saved to `transcripts/`.
+Standard-library Python 3.12+. Reviewing video also needs ffmpeg, and PDF rulebooks need `pip install pypdf`.
+The advocates use `LLM_MODEL` (default `ollama_chat/llama3.1:8b`) and the video is watched by `VISION_MODEL`
+(default `ollama_chat/qwen2.5vl:7b`; `ollama pull qwen2.5vl:7b`). If litellm is installed it is used, so any
+litellm model works (for example `anthropic/claude-sonnet-5-5`); otherwise everything talks to Ollama directly.
+Transcripts of the demo cases are saved to `transcripts/`.
 
 ## From the Lungo Council to a sports council
 
@@ -77,6 +84,38 @@ The teams and players are fictional. To add a case, copy one in `cases.py`: desc
 rulings, facts and disputed points, pick the rule IDs it needs, and give each party its `likes`, `concession` and
 `floor`. The officials' advocate is built from `officials` and `call`.
 
+## Reviewing a video
+
+```
+python3 review.py clip.mp4 --at 0:42 --context "League match, Northgate (red) v Eastport (blue), 88th minute, 1-1.
+    The referee allowed Northgate's goal, ruling that the defender's touch was a deliberate play."
+```
+
+1. **Watch.** ffmpeg pulls 12 frames (`--frames`) from the clip: packed into the 3 seconds either side of `--at`
+   (`--window`), or spread over the whole clip. The vision model describes each one: who is involved, the ball,
+   officials' signals, and on-screen text such as the score or a VAR caption.
+2. **Understand.** The text model works out the sport, the incident, the call and who made it, and every party
+   the call affects, with what each one wants.
+3. **Find the rules.** It picks the sport's rulebooks in `rules/`, shortlists clauses by keyword search, and
+   chooses the ones that could decide the case.
+4. **Rulings and facts.** It lists the rulings the rules allow, starting with the call, and splits what's known
+   into established facts (each tagged `[your context]` or `[video 0:41.5]`) and disputed points.
+5. **Positions.** Each party's advocate ranks the rulings for its side and says how much is at stake; the code
+   turns that into `likes`, `concession` and `floor`. The officials' advocate defends the call.
+
+Then it stops and shows you the case, saved to `cases/<name>/case.json`, with the frames it looked at in
+`cases/<name>/frames/`. Established facts can ground a veto, so check them. Fix anything in `case.json` and press
+Enter, and the council debates the corrected case; the transcript goes in the same folder. Lines marked `CHECK:`
+are answers the builder doubts, such as every party wanting the same ruling. `--yes` skips the pause. With no
+video, `--context` alone builds the case from your description.
+
+* **The vision model describes; it doesn't measure.** A 7B model can say a defender in blue stretched for the
+  ball, not whether an attacker was 10 cm offside. Facts like that should come from your context; otherwise they
+  land as disputed points, which is where they belong.
+* **Your context does most of the work.** Name the teams or players, the call, and anything already settled.
+* **It stops instead of guessing** when it can't tell what the call was, can't find two parties, or has no
+  rulebook for the sport.
+
 ## Rulebooks
 
 The advocates may cite only the clauses a case lists from its rulebook in `rules/`. Each clause is a section:
@@ -95,6 +134,11 @@ You can paste in whole rulebooks: only the clauses a case lists are sent to the 
 the default model has an 8k-token context, and a full rulebook runs to tens of thousands of tokens. Most cases
 need 3 to 9 clauses. Rule IDs start with a prefix for the rulebook (`LOTG-`, `NBA-`, `GOLF-`), which is how the
 council tells a citation from ordinary text.
+
+You can also drop in a rulebook as a PDF, such as `rules/ifab-laws.pdf` (needs `pip install pypdf`). It's split into
+clauses of about 180 words with page-based IDs: `IFAB-p87.2` is the second clause on page 87. Rule-numbered IDs
+read better, so a markdown rulebook with the same name takes precedence. PDFs and their cached split
+(`rules/.cache/`) are kept out of git, because official rulebooks are copyrighted.
 
 ## Results with `llama3.1:8b`
 
@@ -131,3 +175,8 @@ the stakes, and only rulings someone argues for go to a vote. `tests/test_counci
   that fact.
 * The case author writes the facts. Splitting "established" from "disputed" is the most important judgment in a
   case: it decides what can ground a veto.
+* A case built from video is only as good as the models that built it. In testing with `llama3.1:8b`, the
+  builder got the parties' positions right once it was asked what each party wants, but it still sometimes
+  described a ruling's consequences wrongly (a disallowed goal at 1-1 written up as a win for the other side) or
+  listed two rulings that mean the same thing. That's what the pause before the debate is for. It has only been
+  tested on a synthetic clip so far, not on real match footage.

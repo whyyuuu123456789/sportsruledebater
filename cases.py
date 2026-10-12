@@ -5,7 +5,8 @@ Every case has:
   rulings     every ruling the council may reach, including the call
   facts       established facts everyone accepts (F1, F2, ...); a veto must cite one
   disputed    points the sides disagree on (D1, D2, ...); arguable, but they can't ground a veto
-  rulebook    which file in rules/ to read, and rules: the clauses (by ID) the advocates may cite
+  rulebook    which rulebook in rules/ to read (or a list of them), and rules: the clauses (by ID) the
+              advocates may cite
   parties     one advocate per party involved, as many as there are
   high_stakes the call decides a result (a game, a title, a medal): an unresolved rule objection
               to it goes to a human instead of letting the call stand
@@ -18,10 +19,11 @@ For each advocate:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import json
+from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 
-RULES_DIR = Path(__file__).resolve().parent / "rules"
+from library import Rule, load_rulebook  # noqa: F401  (re-exported: cases and rulebooks go together)
 
 
 @dataclass
@@ -31,14 +33,6 @@ class Advocate:
     likes: dict[str, float]
     concession: float = 0.15
     floor: float = 0.5
-
-
-@dataclass
-class Rule:
-    id: str
-    title: str
-    text: str = ""
-    source: str = ""
 
 
 @dataclass
@@ -53,7 +47,7 @@ class Case:
     rulings: dict[str, str]
     facts: dict[str, str]
     disputed: dict[str, str]
-    rulebook: str
+    rulebook: str | list[str]
     rules: tuple[str, ...]
     parties: list[Advocate]
     expect: str                 # what a rules expert would expect: CONSENSUS, CALL_STANDS or ESCALATE
@@ -75,20 +69,23 @@ class Case:
     def advocates(self) -> list[Advocate]:
         return [self.officials_advocate(), *self.parties]
 
+    @property
+    def rulebooks(self) -> list[str]:
+        return [self.rulebook] if isinstance(self.rulebook, str) else list(self.rulebook)
 
-def load_rulebook(name: str) -> dict[str, Rule]:
-    """Reads rules/<name>.md: each clause is a '## ID Title' heading, an optional 'Source:' line and its text."""
-    rules: dict[str, Rule] = {}
-    current = None
-    for line in (RULES_DIR / f"{name}.md").read_text().splitlines():
-        if line.startswith("## "):
-            rid, _, title = line[3:].strip().partition(" ")
-            current = rules[rid] = Rule(rid, title.strip())
-        elif current and line.startswith("Source:"):
-            current.source = line.removeprefix("Source:").strip()
-        elif current:
-            current.text = (current.text + "\n" + line).strip()
-    return rules
+
+def save_case(case: Case, path: Path, **extra) -> None:
+    """Writes a case as JSON. Extra keys (like the video evidence) are kept in the file for people to read."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({**asdict(case), **extra}, indent=2, ensure_ascii=False) + "\n")
+
+
+def load_case(path: Path) -> Case:
+    data = json.loads(path.read_text())
+    data = {k: v for k, v in data.items() if k in {f.name for f in fields(Case)}}
+    data["parties"] = [Advocate(**p) for p in data["parties"]]
+    data["rules"] = tuple(data["rules"])
+    return Case(**data)
 
 
 CASES: dict[str, Case] = {

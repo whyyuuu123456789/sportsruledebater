@@ -23,27 +23,25 @@ No one is in charge. The council ends in one of three ways, checked against the 
     python3 council.py                  # every case (needs Ollama running, or LLM_MODEL set)
     python3 council.py dogso_card       # one case
     python3 council.py all --rounds 4   # fewer rounds
+    python3 council.py --case-file cases/<name>/case.json   # a saved case, such as one review.py built from a video
 """
 
 from __future__ import annotations
 
 import argparse
-import json
-import os
 import re
 import sys
 import time
-import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from cases import CASES, Advocate, Case, load_rulebook
+from cases import CASES, Advocate, Case, load_case
+from library import load_rulebook
+from llm import MODEL, connect
 
 EPS = 1e-9
 MAX_ROUNDS = 6
-MODEL = os.environ.get("LLM_MODEL", "ollama_chat/llama3.1:8b")
-OLLAMA = os.environ.get("OLLAMA_API_BASE", "http://localhost:11434")
 HERE = Path(__file__).resolve().parent
 FACT_ID = re.compile(r"\b[FD]\d+\b")
 VOTE_LINE = re.compile(r"^[^A-Za-z0-9]*(?:\d+[.)]\s*)?([A-Za-z][A-Za-z0-9_]*)\b.{0,40}?\b(APPROVE|REJECT|VETO)\b(.*)$",
@@ -103,10 +101,12 @@ class Council:
         self.name, self.case, self.ask, self.rounds, self._print = name, case, ask, rounds, out
         self.advocates = case.advocates()
         self.officials = self.advocates[0]
-        book = load_rulebook(case.rulebook)
+        book = {}
+        for rulebook in case.rulebooks:
+            book.update(load_rulebook(rulebook))
         missing = [r for r in case.rules if r not in book]
         if missing:
-            raise ValueError(f"rules/{case.rulebook}.md has no clause {', '.join(missing)}")
+            raise ValueError(f"{', '.join(case.rulebooks)} has no clause {', '.join(missing)}")
         self.rules = {r: book[r] for r in case.rules}
         prefixes = sorted({r.split("-")[0] for r in book}, key=len, reverse=True)
         self.rule_id = re.compile(r"\b(?:" + "|".join(map(re.escape, prefixes)) + r")-[A-Za-z0-9.]*[A-Za-z0-9]")
@@ -319,9 +319,9 @@ class Council:
         r = result
         when = f"after {r['rounds']} round{'s' if r['rounds'] > 1 else ''}"
         if r["status"] == "CONSENSUS":
-            self.out(f"  DECISION {when}: CONSENSUS, {r['reason']}: {c.rulings[r['choice']]}.")
+            self.out(f"  DECISION {when}: CONSENSUS, {r['reason']}: {c.rulings[r['choice']].rstrip('.')}.")
         elif r["status"] == "CALL_STANDS":
-            self.out(f"  DECISION {when}: CALL STANDS: {c.rulings[c.call]}. {r['reason']}.")
+            self.out(f"  DECISION {when}: CALL STANDS: {c.rulings[c.call].rstrip('.')}. {r['reason']}.")
             for d in r["dissent"]:
                 self.out(f"    Dissent on record: {d}")
         else:
@@ -336,65 +336,40 @@ class Council:
         return result
 
 
-def wait_for_ollama(timeout: float = 30) -> None:
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        try:
-            urllib.request.urlopen(f"{OLLAMA}/api/version", timeout=2)
-            return
-        except OSError:
-            time.sleep(0.5)
-    sys.exit(f"Couldn't reach Ollama at {OLLAMA}. Start it with: brew services start ollama")
+def debate(name: str, case: Case, ask: Ask, rounds: int, transcript: Path, header: str) -> dict:
+    """Runs the council on one case and saves the transcript."""
+    started = time.time()
+    council = Council(name, case, ask, rounds)
+    result = council.run()
+    council.out(f"  ({MODEL}, {council.calls} model calls, {time.time() - started:.0f}s)")
+    transcript.parent.mkdir(parents=True, exist_ok=True)
+    transcript.write_text(header + "\n\n" + "\n".join(council.lines) + "\n")
+    return result
 
 
-def make_ask() -> Ask:
-    """Uses litellm when it's installed; otherwise talks to Ollama directly, so no packages are required."""
-    try:
-        import litellm
-
-        litellm.drop_params = True
-        litellm.suppress_debug_info = True
-    except ImportError:
-        litellm = None
-        if not MODEL.startswith("ollama"):
-            sys.exit(f"LLM_MODEL={MODEL} needs litellm (pip install litellm). Ollama models work without it.")
-    if MODEL.startswith("ollama"):
-        wait_for_ollama()
-
-    def ask(system: str, user: str, max_tokens: int, seed: int) -> str:
-        messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
-        if litellm:
-            extra = {"num_ctx": 8192} if MODEL.startswith("ollama") else {}
-            resp = litellm.completion(model=MODEL, max_tokens=max_tokens, temperature=0.3, seed=seed,
-                                      messages=messages, **extra)
-            return resp.choices[0].message.content or ""
-        body = {"model": MODEL.split("/", 1)[-1], "messages": messages, "stream": False,
-                "options": {"temperature": 0.3, "seed": seed, "num_predict": max_tokens, "num_ctx": 8192}}
-        req = urllib.request.Request(f"{OLLAMA}/api/chat", json.dumps(body).encode(),
-                                     {"Content-Type": "application/json"})
-        with urllib.request.urlopen(req, timeout=600) as resp:
-            return json.load(resp)["message"]["content"]
-
-    return ask
+DEMO_HEADER = ("> **Simulation.** Every advocate is played by an AI model. The teams and players are fictional, and "
+               "the rule excerpts in rules/ are paraphrased.")
+SAVED_HEADER = ("> Every advocate is played by an AI model. The case was built by AI models from a video and the "
+                "user's description; check its facts in case.json before trusting the outcome.")
 
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("case", nargs="?", default="all", choices=[*CASES, "all"])
+    ap.add_argument("--case-file", type=Path, help="debate a saved case instead, such as one review.py built")
     ap.add_argument("--rounds", type=int, default=MAX_ROUNDS, help=f"most rounds per case (default {MAX_ROUNDS})")
     args = ap.parse_args(argv)
-    ask = make_ask()
+    ask = connect(MODEL)
+
+    if args.case_file:
+        name = args.case_file.parent.name if args.case_file.stem == "case" else args.case_file.stem
+        debate(name, load_case(args.case_file), ask, args.rounds, args.case_file.with_name("transcript.md"),
+               SAVED_HEADER)
+        return 0
 
     rows = []
     for name in (list(CASES) if args.case == "all" else [args.case]):
-        started = time.time()
-        council = Council(name, CASES[name], ask, args.rounds)
-        result = council.run()
-        council.out(f"  ({MODEL}, {council.calls} model calls, {time.time() - started:.0f}s)")
-        (HERE / "transcripts").mkdir(exist_ok=True)
-        header = ("> **Simulation.** Every advocate is played by an AI model. The teams and players are fictional, "
-                  "and the rule excerpts in rules/ are paraphrased.\n")
-        (HERE / "transcripts" / f"{name}.md").write_text(header + "\n" + "\n".join(council.lines) + "\n")
+        result = debate(name, CASES[name], ask, args.rounds, HERE / "transcripts" / f"{name}.md", DEMO_HEADER)
         rows.append((name, CASES[name], result))
         print()
 
