@@ -1,0 +1,78 @@
+{
+  "sport": "formula1",
+  "level": "from video",
+  "title": "Unsafe release during pit stop",
+  "incident": "During a pit stop, Team Aurora's car was released into the pit lane fast lane, causing Team Halcyon's car to brake to avoid contact. The stewards imposed a 5-second time penalty on Team Aurora's driver. The incident occurred in the pit lane, where Team Aurora's car was serviced.",
+  "officials": "Stewards",
+  "call": "penalty_stands",
+  "call_reason": "unsafe release",
+  "rulings": {
+    "penalty_stands": "The 5-second time penalty stands: Team Aurora's driver must serve the penalty at their next pit stop",
+    "penalty_overturned": "The 5-second time penalty is overturned: Team Aurora's driver does not serve the penalty",
+    "further_investigation": "The case is referred for further investigation: No penalty is imposed or overturned at this time"
+  },
+  "facts": {
+    "F1": "The incident occurred in the pit lane. [your context]",
+    "F2": "Team Aurora's car was released into the pit lane fast lane. [your context]",
+    "F3": "Team Halcyon's car was arriving in the pit lane at the time of the release. [your context]",
+    "F4": "The Halcyon driver had to brake to avoid contact with the Aurora car. [your context]",
+    "F5": "The stewards imposed a 5-second time penalty on Team Aurora's driver. [your context]",
+    "F6": "The incident occurred during a Formula 1 race. [your context]",
+    "F7": "The pit lane is surrounded by a fence. [video 0:00.0]",
+    "F8": "There are people standing on the other side of the fence. [video 0:00.0]"
+  },
+  "disputed": {
+    "D1": "The Halcyon car was still about ten metres back from the Aurora car at the time of the release."
+  },
+  "rulebook": [
+    "formula1"
+  ],
+  "rules": [
+    "FIA-B1.6.2",
+    "FIA-B1.9.6",
+    "FIA-B1.6.3",
+    "FIA-B1.9.5",
+    "FIA-B1.9.4"
+  ],
+  "parties": [
+    {
+      "name": "Team Aurora",
+      "side": "You represent Team Aurora. Team Aurora wants the penalty to be overturned. they gain 5 seconds if the penalty is overturned",
+      "likes": {
+        "penalty_overturned": 1.0,
+        "further_investigation": 0.5,
+        "penalty_stands": 0.0
+      }
+    },
+    {
+      "name": "Team Halcyon",
+      "side": "You represent Team Halcyon. Team Halcyon wants the penalty to stand. they gain a safer pit lane environment if the penalty stands",
+      "likes": {
+        "penalty_stands": 1.0,
+        "further_investigation": 0.5,
+        "penalty_overturned": 0.0
+      }
+    }
+  ],
+  "note": "",
+  "officials_side": "",
+  "video": "/private/tmp/claude-501/-Users-alvinpeng-Desktop-sportsruledebater/9aba229e-19dc-4a9e-885b-dd6a0d0f5af2/scratchpad/f1clips/redbull_pitstop_practice.webm",
+  "frames": [
+    "cases/test_pitstop/frames/frame_0000.00.jpg",
+    "cases/test_pitstop/frames/frame_0008.72.jpg",
+    "cases/test_pitstop/frames/frame_0017.44.jpg",
+    "cases/test_pitstop/frames/frame_0026.17.jpg",
+    "cases/test_pitstop/frames/frame_0034.89.jpg",
+    "cases/test_pitstop/frames/frame_0043.61.jpg"
+  ],
+  "context": "TEST SCENARIO, hypothetical, not a real incident: treat this pit stop as if it happened during a Formula 1 race. After the stop, Team Aurora's car (the car in the video) was released into the pit lane fast lane just as Team Halcyon's car was arriving, and the Halcyon driver had to brake to avoid contact. The stewards gave the Aurora driver a 5-second time penalty for an unsafe release. Team Aurora says the Halcyon car was still about ten metres back and there was never a clear and immediate risk of contact.",
+  "evidence": [
+    "[video 0:00.0] A person in a red and black uniform is working on a car in a pit lane. The car is red and black with the Red Bull logo on it. There are other people in the pit lane, some of whom are also working on cars. The pit lane is surrounded by a fence and there are some people standing on the other side of the fence. There is a DHL sign in the background. There is a number 8 sign on the wall in the background. There is a person in a white and orange uniform standing in the foreground. The person is holding a can of something in their hand. There is a man in a black shirt and shorts walking away from the car. There is a man in a black shirt and shorts walking towards the car. There is a man in a black shirt and shorts standing next to the car. There is a man in a black shirt and shorts standing next to the car. There is a man in a black shirt and shorts standing next to the car. There is a man in a black shirt and shorts standing next to the car. There is a man in a black shirt and shorts standing next to the car. There is a man in a black shirt and shorts standing next to the car. There is a man in a black shirt and shorts standing next to the car. There is a man in a black shirt and shorts standing next to the car. There is a man in a black shirt and shorts standing next to the car. There is a man in a black shirt and shorts standing next to the car. There is a man in a black shirt and shorts standing next to the car. There is a man in a black shirt and shorts standing next to the car. There is a man in a black shirt and",
+    "[video 0:26.2] A team member in a black uniform is kneeling beside a Formula 1 car, working on it. Other team members in similar uniforms are standing around, observing. The car has the \"Total\" and \"Infiniti\" logos on it. The scene is in a pit stop area with a garage in the background. The team members are wearing helmets and gloves. There are no visible officials or on-screen text in this frame.",
+    "[video 0:34.9] The scene remains largely the same as in the previous frame. The team member in the black uniform is still kneeling and working on the Formula 1 car. The other team members are still standing around, observing. The car's logos remain visible. The background is consistent with the previous frame, showing the pit stop area and the garage. There are no visible officials or on-screen text in this frame.",
+    "[video 0:43.6] The scene remains largely the same as in the previous frame. The team member in the black uniform is still kneeling and working on the Formula 1 car. The other team members are still standing around, observing. The car's logos remain visible. The background is consistent with the previous frame, showing the pit stop area and the garage. There are no visible officials or on-screen text in this frame."
+  ],
+  "warnings": [
+    "Check that 'penalty_stands' is the call the officials made."
+  ]
+}
