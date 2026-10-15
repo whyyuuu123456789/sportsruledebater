@@ -11,22 +11,24 @@ It can also build a case itself: give it a video and what you know, and the agen
 parties are, which rules apply and where each side starts, then discuss it.
 
 ```
-python3 council.py                    # every demo case (needs Ollama running, or LLM_MODEL set)
-python3 council.py dogso_card         # one case
-python3 council.py all --rounds 3     # a shorter discussion
-python3 council.py all --panel 0      # no panel: the advocates decide among themselves
-python3 web.py                        # the website: open http://localhost:8000
-python3 review.py clip.mp4 --at 0:42 --context "..."   # build a case from a video, then discuss it
-python3 council.py --case-file cases/<name>/case.json  # discuss a saved case again
-python3 -m unittest discover -s tests -t .   # tests, with a scripted model (no LLM needed)
+make                                   # build everything into build/
+build/council                          # every demo case (needs Ollama running, or LLM_MODEL set)
+build/council dogso_card               # one case
+build/council all --rounds 3           # a shorter discussion
+build/council all --panel 0            # no panel: the advocates decide among themselves
+build/web                              # the website: open http://localhost:8000
+build/review clip.mp4 --at 0:42 --context "..."   # build a case from a video, then discuss it
+build/council --case-file cases/<name>/case.json  # discuss a saved case again
+make test                              # tests, with a scripted model (no LLM needed)
 ```
 
-Standard-library Python 3.12+. Reviewing video also needs ffmpeg, and PDF rulebooks need `pip install pypdf`. The
-advocates use `LLM_MODEL` (default `ollama_chat/llama3.1:8b`). The panel, and the step that watches the video, use
-`VISION_MODEL` (default `ollama_chat/qwen2.5vl:7b`; `ollama pull qwen2.5vl:7b`), so the panel is a different model
-from the advocates and can see images. If litellm is installed it is used, so any litellm model
-works (for example `anthropic/claude-sonnet-5-5`); otherwise everything talks to Ollama directly. Transcripts of the
-demo cases are saved to `transcripts/`.
+C++20 and libcurl, nothing else to install: on macOS the Xcode command line tools have both (on Linux, a C++20
+compiler and `libcurl4-openssl-dev` or your distribution's equivalent). Reviewing video also needs ffmpeg, and PDF
+rulebooks need pdftotext (`brew install poppler`). The advocates use `LLM_MODEL` (default `ollama_chat/llama3.1:8b`).
+The panel, and the step that watches the video, use `VISION_MODEL` (default `ollama_chat/qwen2.5vl:7b`; `ollama pull
+qwen2.5vl:7b`), so the panel is a different model from the advocates and can see images. Ollama models are called
+through Ollama's own API; Claude models work too, as `anthropic/<model>` (for example `anthropic/claude-sonnet-5-5`),
+with your key in `ANTHROPIC_API_KEY`. Transcripts of the demo cases are saved to `transcripts/`.
 
 ## How a review works
 
@@ -80,14 +82,14 @@ the advocates decided by themselves and nobody was persuaded, the call always st
 | `deflection_offside` | Soccer | Referee & VAR, Northgate, Eastport | A late goal after a defender's touch: deliberate play (goal) or deflection (offside)? |
 | `moved_ball` | Golf | Rules Committee + 3 players | A ball moved at address on the 72nd hole: two strokes, one, or none, with the title riding on it |
 
-The teams and players are fictional. To add a case, copy one in `cases.py`: describe the incident, list the
+The teams and players are fictional. To add a case, copy one in `src/cases.cpp` and run `make`: describe the incident, list the
 rulings, facts and disputed points, pick the rule IDs it needs, and give each party its `likes`. The officials'
 advocate is built from `officials` and `call`.
 
 ## Reviewing a video
 
 ```
-python3 review.py clip.mp4 --at 0:42 --context "League match, Northgate (red) v Eastport (blue), 88th minute, 1-1.
+build/review clip.mp4 --at 0:42 --context "League match, Northgate (red) v Eastport (blue), 88th minute, 1-1.
     The referee allowed Northgate's goal, ruling that the defender's touch was a deliberate play."
 ```
 
@@ -121,7 +123,7 @@ pause. With no video, `--context` alone builds the case from your description.
 ## The website
 
 ```
-python3 web.py        # then open http://localhost:8000
+build/web        # then open http://localhost:8000
 ```
 
 The same review in a browser. It runs on this computer and only listens on localhost.
@@ -168,7 +170,7 @@ default model has an 8k-token context, and a full rulebook runs to tens of thous
 tells a citation from ordinary text. A prefix can't look like a fact ID: Formula 1 uses `FIA-` because `F1-` would
 read as "fact F1".
 
-You can also drop in a rulebook as a PDF, such as `rules/ifab-laws.pdf` (needs `pip install pypdf`). It's split into
+You can also drop in a rulebook as a PDF, such as `rules/ifab-laws.pdf` (needs pdftotext: `brew install poppler`). It's split into
 clauses of about 180 words with page-based IDs: `IFAB-p87.2` is the second clause on page 87. Rule-numbered IDs read
 better, so a markdown rulebook with the same name takes precedence. PDFs and their cached split (`rules/.cache/`) are
 kept out of git, because official rulebooks are copyrighted.
@@ -183,7 +185,7 @@ Advocates on `llama3.1:8b`, panel on `qwen2.5vl:7b`.
 | `dogso_card` | Panel unanimous: penalty and red card (upheld) | 2-1 for the red card |
 | `deflection_offside` | Panel unanimous: the goal stands (upheld) | 2-1 for the goal |
 | `moved_ball` | Panel unanimous: two-stroke penalty (upheld) | three of four on a one-stroke compromise |
-| Pit-stop clip, `review.py` | Panel 3-0: the penalty is overturned | 2-1 to keep the penalty |
+| Pit-stop clip, command line | Panel 3-0: the penalty is overturned | 2-1 to keep the penalty |
 | Pit-stop clip, website | Panel 2-1: the penalty is overturned | 2-1 to keep the penalty |
 
 The last two rows are a made-up "unsafe release" call laid over real footage: Red Bull's 2015 pit-stop practice
@@ -208,7 +210,7 @@ Transcripts of the demo cases are in `transcripts/`.
 
 * Every advocate is the same model playing a different side, so the discussion is only as sharp as that model.
   `llama3.1:8b` follows the format but often misreads a rule, and small models tend either to dig in or to agree
-  too easily. A stronger model through litellm should argue better. Runs use a fixed seed and low temperature, but
+  too easily. A stronger model, such as a Claude model through `anthropic/`, should argue better. Runs use a fixed seed and low temperature, but
   they aren't guaranteed to repeat word for word.
 * The panel is a 7B vision model too. Its reasons are sometimes muddled: in one run a member voted to keep a penalty
   while writing that the clip gave no evidence for it. It looks at up to six stills, not the moving clip, and its

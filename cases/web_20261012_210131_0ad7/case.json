@@ -1,0 +1,78 @@
+{
+  "sport": "formula1",
+  "level": "from video",
+  "title": "Incident on lap 20 of the sprint race",
+  "incident": "Two Formula 1 cars collided on the track, resulting in Oscar Piastri spinning out of control. The collision occurred when Lando Norris's car drifted wide and made contact with Piastri's car. As a result, Piastri's car was damaged and he was unable to continue racing.",
+  "officials": "Track officials",
+  "call": "no_penalty",
+  "call_reason": "",
+  "rulings": {
+    "no_penalty": "No penalty: Lando Norris is not penalized, and Oscar Piastri is unable to continue racing",
+    "5_second_penalty": "5-second penalty: Lando Norris is given a 5-second penalty, and Oscar Piastri is allowed to continue racing",
+    "disqualification": "Disqualification: Lando Norris is disqualified, and Oscar Piastri wins the race"
+  },
+  "facts": {
+    "F1": "Two Formula 1 cars collided on the track. [On lap 20 of the sprint, piastri and norris were very close to gasining places, btu got into a battle of their own, and norris tried to send a move down the inside of a corner but drifted slightly wide and hit piastri causing them both to go wide, causing a collision]",
+    "F2": "Oscar Piastri was unable to continue racing. [the collision caused him and norris to spin around but he ended up in the wall (the result is unimportant to the case) he was also ahead at the apex, while lando wasnt enough alongside to deserve racing room]",
+    "F3": "The collision occurred when Lando Norris's car drifted wide and made contact with Piastri's car. [video 0:14.1]",
+    "F4": "The incident occurred on the 20th lap of the sprint race. [video 0:07.7]",
+    "F5": "Lando Norris was not penalized by the officials. [No further action from officials]",
+    "F6": "Oscar Piastri was in 4th position when the collision occurred. [video 0:07.7]",
+    "F7": "Lando Norris was in 5th position when the collision occurred. [video 0:07.7]",
+    "F8": "A yellow flag was visible on the track during the incident. [video 0:13.2]"
+  },
+  "disputed": {
+    "D1": "Lando Norris intentionally caused the collision."
+  },
+  "rulebook": [
+    "formula1"
+  ],
+  "rules": [
+    "FIA-L4.2d",
+    "FIA-B5.13.4",
+    "FIA-B1.6.2",
+    "FIA-B5.12",
+    "FIA-B1.8.6",
+    "FIA-B1.9.5",
+    "FIA-L4.2b"
+  ],
+  "parties": [
+    {
+      "name": "Lando Norris",
+      "side": "You represent Lando Norris. Lando Norris wants no penalty. he avoids a penalty and continues racing",
+      "likes": {
+        "5_second_penalty": 1,
+        "no_penalty": 0.5,
+        "disqualification": 0
+      }
+    },
+    {
+      "name": "Oscar Piastri",
+      "side": "You represent Oscar Piastri. Oscar Piastri wants a penalty for Norris. he would have been given a chance to continue racing if Norris was penalized",
+      "likes": {
+        "no_penalty": 1,
+        "disqualification": 0.5,
+        "5_second_penalty": 0
+      }
+    }
+  ],
+  "note": "",
+  "officials_side": "",
+  "video": "/Users/alvinpeng/Desktop/Github/Personal/sportsruledebater/sportsruledebater/cases/web_20261012_210131_0ad7/clip.mp4",
+  "frames": [
+    "cases/web_20261012_210131_0ad7/frames/frame_0005.00.jpg",
+    "cases/web_20261012_210131_0ad7/frames/frame_0005.91.jpg",
+    "cases/web_20261012_210131_0ad7/frames/frame_0006.82.jpg",
+    "cases/web_20261012_210131_0ad7/frames/frame_0007.73.jpg",
+    "cases/web_20261012_210131_0ad7/frames/frame_0008.64.jpg",
+    "cases/web_20261012_210131_0ad7/frames/frame_0009.55.jpg",
+    "cases/web_20261012_210131_0ad7/frames/frame_0010.45.jpg",
+    "cases/web_20261012_210131_0ad7/frames/frame_0011.36.jpg",
+    "cases/web_20261012_210131_0ad7/frames/frame_0012.27.jpg",
+    "cases/web_20261012_210131_0ad7/frames/frame_0013.18.jpg",
+    "cases/web_20261012_210131_0ad7/frames/frame_0014.09.jpg",
+    "cases/web_20261012_210131_0ad7/frames/frame_0015.00.jpg"
+  ],
+  "context": "One car dives down the inside of another, and drifts wide causing the inside car do collide with the outside car (lando norris is on the inside and oscar piastri is on the outside). They both spin around and piastri is out of the race. the officials did not give Lando norris a penalty for this incident",
+  "warnings": []
+}
